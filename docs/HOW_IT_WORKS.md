@@ -6,9 +6,6 @@ background, and the later sections go into the detail.
 
 Related documents:
 - [DEPLOY.md](DEPLOY.md): deploy it yourself.
-- [MODEL_CARD.md](MODEL_CARD.md): model assumptions and limits.
-- [DEMO_VIDEO_SCRIPT.md](DEMO_VIDEO_SCRIPT.md): the 3–4 minute demo.
-- [PERFORMANCE_REPORT.md](PERFORMANCE_REPORT.md): measured latency, load, Gemini, Lighthouse and model accuracy.
 - [../data/README.md](../data/README.md): every dataset and cleaning step.
 
 ## Contents
