@@ -1,0 +1,28 @@
+# Files NOT uploaded to Cloud Build by `gcloud builds submit` (keeps the upload ~35 MB instead of ~4 GB).
+.gcloudignore
+.git
+.gitignore
+.idea
+*.iml
+.vscode
+.DS_Store
+**/.DS_Store
+.env
+.env.*
+*.pem
+*credentials*.json
+.venv
+.deploy-venv
+**/__pycache__
+*.pyc
+**/node_modules
+frontend/dist
+tests
+docs
+# raw downloads (3.7 GB) are only needed to rebuild the processed tables offline
+data/raw
+data/processed/*.csv
+data/processed/mvp
+data/processed/geo/district_centroids.csv
+# zip archives (the deploy bundle, local backups) are never part of the build
+*.zip

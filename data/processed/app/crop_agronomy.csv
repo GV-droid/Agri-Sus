@@ -1,0 +1,19 @@
+crop,display_name,commodity_category,family,seasons,duration_days,kc_avg,extra_water_mm,n_credit_next_crop_kg_ha,n_fixed_kg_ha,n_removal_kg_per_t,product_recovery,price_elasticity,kcal_per_kg,protein_g_per_kg,heat_sensitive_rabi,drought_tolerance,optimizer_crop,notes
+rice,Paddy (Rice),Cereal,Poaceae,Kharif|Rabi,125,1.10,450,0,0,15,0.67,-0.25,3450,68,0,0.2,1,"Kc FAO-56 Tab.12 mid 1.20 avg ~1.10; +450 mm puddling/percolation (ICAR-IIWM); yields reported as rice (milled) by DES"
+wheat,Wheat,Cereal,Poaceae,Rabi,130,0.85,0,0,0,24,1.00,-0.34,3410,121,1,0.4,1,"FAO-56 Kc 0.3/1.15/0.25; terminal heat >32C Feb-Mar reduces grain fill (ICAR-IIWBR)"
+maize,Maize,Cereal,Poaceae,Kharif|Rabi,110,0.85,0,0,0,25,1.00,-0.30,3420,111,0,0.5,1,FAO-56 Kc 0.3/1.20/0.35
+bajra,Pearl millet (Bajra),Cereal,Poaceae,Kharif,85,0.75,0,0,0,25,1.00,-0.30,3610,116,0,0.9,1,Highly drought tolerant (ICRISAT)
+jowar,Sorghum (Jowar),Cereal,Poaceae,Kharif|Rabi,110,0.75,0,0,0,25,1.00,-0.30,3490,104,0,0.8,1,FAO-56 Kc 0.3/1.0/0.55
+ragi,Finger millet (Ragi),Cereal,Poaceae,Kharif,110,0.75,0,0,0,25,1.00,-0.30,3280,73,0,0.8,1,
+tur,Pigeon pea (Tur/Arhar),Pulse,Fabaceae,Kharif,150,0.75,0,40,80,40,1.00,-0.60,3430,223,0,0.8,1,"Deep rooted; short-duration varieties 120-140 d (ICAR-IIPR); BNF 40-200 kg N/ha"
+gram,Chickpea (Chana),Pulse,Fabaceae,Rabi,110,0.70,0,40,60,40,1.00,-0.60,3600,171,0,0.7,1,"Residual-moisture rabi pulse; BNF 40-100 kg N/ha (ICAR-IIPR)"
+urad,Black gram (Urad),Pulse,Fabaceae,Kharif|Rabi,80,0.75,0,30,50,45,1.00,-0.60,3470,240,0,0.6,1,Rice-fallow pulse in TN/coastal AP
+moong,Green gram (Moong),Pulse,Fabaceae,Kharif|Rabi,70,0.75,0,30,50,45,1.00,-0.60,3480,240,0,0.6,1,Short duration; summer moong in Punjab
+lentil,Lentil (Masur),Pulse,Fabaceae,Rabi,110,0.70,0,35,60,40,1.00,-0.60,3430,250,0,0.6,1,
+groundnut,Groundnut,Edible oilseed,Fabaceae,Kharif|Rabi,115,0.80,0,25,100,55,0.29,-0.50,5670,258,0,0.6,1,"Oil recovery ~29% of pods (SEA); seed N removal high so net credit modest"
+soybean,Soybean,Edible oilseed,Fabaceae,Kharif,100,0.85,0,25,90,60,0.18,-0.50,4460,365,0,0.5,1,Oil recovery ~18% (SOPA)
+rapeseed_mustard,Rapeseed & Mustard,Edible oilseed,Brassicaceae,Rabi,120,0.70,0,0,0,35,0.34,-0.50,5400,200,0,0.7,1,"Oil recovery ~34% (SEA); needs 25-30% of paddy-wheat water; matures before March heat"
+sunflower,Sunflower,Edible oilseed,Asteraceae,Kharif|Rabi,95,0.80,0,0,0,30,0.35,-0.50,5840,208,0,0.6,1,Oil recovery ~35%
+sesamum,Sesame (Til),Edible oilseed,Pedaliaceae,Kharif|Rabi,90,0.70,0,0,0,30,0.40,-0.50,5730,177,0,0.8,1,Oil recovery ~40%
+cotton,Cotton,Fibre,Malvaceae,Kharif,170,0.85,0,0,0,30,1.00,-0.20,0,0,0,0.6,0,Not reallocated by optimizer (fibre)
+sugarcane,Sugarcane,Sugar,Poaceae,Annual,330,1.00,0,0,0,1.2,1.00,-0.20,0,0,0,0.1,0,Not reallocated by optimizer (annual)

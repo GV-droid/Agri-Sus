@@ -1,0 +1,14 @@
+crop_name,commodity,commodity_category,oil_or_pulse_recovery_factor,baseline_year,baseline_domestic_prod_mt,baseline_imports_mt,baseline_exports_mt,baseline_consumption_mt,baseline_ssr_pct,baseline_import_value_usd_mn,import_landed_price_usd_t,price_elasticity
+rice,rice,Cereal,1.0,2024-2025,149.439,0.007,20.196,129.251,115.62,6.48,888.2,-0.25
+wheat,wheat,Cereal,1.0,2024-2025,117.859,0.128,0.109,117.878,99.98,45.39,353.9,-0.34
+maize,maize,Cereal,1.0,2024-2025,43.292,0.97,0.558,43.704,99.06,259.81,267.8,-0.3
+tur,pulses,Pulse,1.0,2024-2025,24.276,7.344,0.793,30.827,78.75,5545.52,755.1,-0.6
+gram,pulses,Pulse,1.0,2024-2025,24.276,7.344,0.793,30.827,78.75,5545.52,755.1,-0.6
+urad,pulses,Pulse,1.0,2024-2025,24.276,7.344,0.793,30.827,78.75,5545.52,755.1,-0.6
+moong,pulses,Pulse,1.0,2024-2025,24.276,7.344,0.793,30.827,78.75,5545.52,755.1,-0.6
+lentil,pulses,Pulse,1.0,2024-2025,24.276,7.344,0.793,30.827,78.75,5545.52,755.1,-0.6
+groundnut,edible_oils,Edible oilseed,0.29,2024-2025,10.438,16.496,0.356,26.578,39.27,17450.32,1057.9,-0.5
+soybean,edible_oils,Edible oilseed,0.18,2024-2025,10.438,16.496,0.356,26.578,39.27,17450.32,1057.9,-0.5
+rapeseed_mustard,edible_oils,Edible oilseed,0.34,2024-2025,10.438,16.496,0.356,26.578,39.27,17450.32,1057.9,-0.5
+sunflower,edible_oils,Edible oilseed,0.35,2024-2025,10.438,16.496,0.356,26.578,39.27,17450.32,1057.9,-0.5
+sesamum,edible_oils,Edible oilseed,0.4,2024-2025,10.438,16.496,0.356,26.578,39.27,17450.32,1057.9,-0.5

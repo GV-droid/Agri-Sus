@@ -1,0 +1,7 @@
+# Extra packages for the Google Cloud data pipeline (Earth Engine + BigQuery loaders); the app itself needs only
+# backend/requirements.txt. Cloud Shell: pip install --user -r scripts/requirements-gcp.txt
+earthengine-api>=1.1
+google-cloud-bigquery>=3.20
+pandas>=2.0
+pyarrow>=14
+db-dtypes>=1.2
