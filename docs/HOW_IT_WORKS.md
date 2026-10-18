@@ -373,7 +373,6 @@ sequenceDiagram
   A->>Q: one row per section (a free load job)
   A-->>B: the document
 ```
-
 **What is in it.** An executive summary, eight sections and an annex. The sections follow the usual structure for
 reviewing an agricultural policy, adapted to an *ex-ante proposal*: where a review would report measured results,
 the document says what will be measured, against which baseline, and what the model can and cannot attribute.
