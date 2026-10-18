@@ -493,7 +493,6 @@ sequenceDiagram
   A-->>B: the plan, exactly as saved
   B->>B: restore levers, scenario, map, tabs; show the saved-policy banner
 ```
-
 - **Save.** **💾 Save as policy** (under the levers) saves the plan on screen; it is disabled while the levers have
   unsaved changes, so a policy always matches its numbers. The name is suggested from the levers.
 - **Library.** **📁 Policies** lists every saved policy with its scenario, date, headline numbers (ASSI, import
