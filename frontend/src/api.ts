@@ -64,10 +64,25 @@ export type Ledger = {
   public_return_ratio: number | null
 }
 export type Tier = { tier: string; districts: number; outlay_cr: number; returns_cr: number }
+export type PlanTotals = {
+  years: number
+  first_year: number
+  last_year: number
+  budget_cr: number
+  outlay_cr: number
+  by_instrument_cr: Mix
+  forex_saved_cr: number
+  power_subsidy_saved_cr: number
+  urea_subsidy_saved_cr: number
+  returns_cr: number
+  public_return_ratio: number | null
+  fiscal_roi: number | null
+}
 export type PolicyMix = {
   mode: 'fixed' | 'min_budget'
   instruments: { id: keyof Mix; label: string; enabled: boolean; outlay_2030_cr: number }[]
   budget_path_cr: ({ year: number; budget_cr: number; outlay_cr: number } & Mix)[]
+  totals?: PlanTotals
   min_budget_cr: number | null
   target_met: boolean
   import_target_shortfall_usd_bn: number
@@ -171,8 +186,12 @@ export type DistrictResult = {
   years: Record<string, DistrictYear>
 }
 
+export type PolicyRef = { id: string; name: string; note: string; source: string; created_at: string; deleted: boolean; scenario_label: string }
 export type SimResult = {
   run_id: string
+  plan_years?: number[]
+  policy?: PolicyRef
+  params_run_id?: string
   params: Record<string, unknown> & { scenario: string }
   solver: { engine: string; status: string; variables: number; constraints: number; seconds: number }
   kpis: Kpi[]
@@ -214,7 +233,27 @@ export type Meta = {
   budget_modes?: { id: string; label: string }[]
   instruments?: { id: keyof Mix; label: string }[]
   trade?: { fiscal_year: string | null; max_cuts: number; products: { product: string; group: string; total_kt: number; suppliers: string[] }[] }
+  horizon?: { min: number; max: number; default: number; start: number }
+  store?: StoreStatus
 }
+
+export type StoreStatus = { documents: string; snapshots: string; shared: boolean; durable: boolean }
+export type PolicySummary = {
+  first_year: number; end_year: number; assi: number; assi_status_quo: number; import_saving_usd_bn: number; water_saved_bcm: number
+  farmer_income_vs_today_pct: number; budget_mode: string; target_met: boolean; outlay_end_year_cr: number; outlay_total_cr: number
+  returns_total_cr: number | null; districts: number
+}
+export type PolicyMeta = {
+  id: string; name: string; note: string; source: 'user' | 'copilot'; created_at: string; updated_at: string; deleted: boolean
+  deleted_at: string | null; scenario: string; scenario_label: string; run_id: string; model_version: string
+  levers: Record<string, unknown>; summary: PolicySummary
+}
+export type ChatSummary = { id: string; title: string; created_at: string; updated_at: string; n_messages: number; language: string }
+export type ChatMessage = {
+  role: 'user' | 'assistant'; content: string; at?: string; citations?: { title: string; uri: string }[]
+  policies?: { id: string; name: string }[]; simulations?: string[]; model?: string | null
+}
+export type ChatSession = ChatSummary & { messages: ChatMessage[] }
 
 export type Trace = {
   profile: Record<string, unknown> & { top_crops_2020_24: { crop: string; season: string; area_ha: number; yield_kg_ha: number }[] }
@@ -222,6 +261,8 @@ export type Trace = {
     district_name: string
     state_name: string
     context: Record<string, number | string>
+    final_year?: number
+    plan_years?: number[]
     moves_2030: { crop: string; season: string; baseline_ha: number; plan_2030_ha: number; change_ha: number; yield_kg_ha: number; net_margin_inr_ha: number; cwar: number; reasons: string[] }[]
     rejected_alternatives: { crop: string; season: string; reasons: string[] }[]
     rotation_timeline: { year: number; season: string; total_ha: number; top_crops: { crop: string; area_ha: number }[] }[]
@@ -232,18 +273,34 @@ export type Trace = {
 export type AgentEvent =
   | { type: 'model'; model: string; backend: string }
   | { type: 'tool_call'; name: string; args: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; summary: string }
+  | { type: 'tool_result'; name: string; summary: string; ok?: boolean }
   | { type: 'text'; text: string }
   | { type: 'citations'; citations: { title: string; uri: string }[] }
   | { type: 'simulation'; run_id: string; scenario?: string }
+  | { type: 'policy'; id: string; name: string; run_id: string; created?: boolean }
+  | { type: 'session'; id: string; saved?: boolean }
   | { type: 'error'; text: string }
   | { type: 'done' }
 
+/** The API's error text: FastAPI's {"detail": ...} message, else the raw body. */
+async function errText(res: Response): Promise<string> {
+  const t = await res.text()
+  try {
+    const d = JSON.parse(t).detail
+    if (typeof d === 'string') return d
+    if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg)
+  } catch { /* not JSON */ }
+  return t || res.statusText
+}
+
 async function j<T>(r: Promise<Response>): Promise<T> {
   const res = await r
-  if (!res.ok) throw new Error((await res.text()) || res.statusText)
+  if (!res.ok) throw new Error(await errText(res))
   return res.json()
 }
+
+const JSON_HEADERS = { 'content-type': 'application/json' }
+const send = (method: string, body?: unknown): RequestInit => ({ method, headers: JSON_HEADERS, body: body === undefined ? undefined : JSON.stringify(body) })
 
 export const api = {
   meta: () => j<Meta>(fetch('/api/meta')),
@@ -255,12 +312,25 @@ export const api = {
   candidates: (code: number, runId: string | undefined, year: number) =>
     j<Candidates>(fetch(`/api/district/${code}/candidates?year=${year}${runId ? `&run_id=${runId}` : ''}`)),
   trade: () => j<TradeDeps>(fetch('/api/trade')),
+  solveEstimate: () => j<{ seconds: number }>(fetch('/api/solve-estimate')),
+  policies: {
+    list: () => j<{ policies: PolicyMeta[]; max: number; store: StoreStatus }>(fetch('/api/policies')),
+    save: (runId: string, name: string, note: string) => j<PolicyMeta>(fetch('/api/policies', send('POST', { run_id: runId, name, note }))),
+    update: (id: string, patch: { name?: string; note?: string; deleted?: boolean }) => j<PolicyMeta>(fetch(`/api/policies/${id}`, send('PATCH', patch))),
+    remove: (id: string, purge = false) => j<PolicyMeta | { id: string; purged: boolean }>(fetch(`/api/policies/${id}${purge ? '?purge=true' : ''}`, send('DELETE'))),
+  },
+  chats: {
+    list: () => j<{ chats: ChatSummary[]; store: StoreStatus }>(fetch('/api/chats')),
+    get: (id: string) => j<ChatSession>(fetch(`/api/chats/${id}`)),
+    remove: (id: string) => j<{ id: string; deleted: boolean }>(fetch(`/api/chats/${id}`, send('DELETE'))),
+  },
   brief: (runId: string | undefined, state: string | null, language: string) =>
     j<{ markdown: string; model: string; scope: string }>(fetch('/api/brief', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ run_id: runId, state, language }) })),
-  async *chat(messages: { role: string; content: string }[], language = 'en'): AsyncGenerator<AgentEvent> {
-    const res = await fetch('/api/agent/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messages, language }) })
+  async *chat(messages: { role: string; content: string }[], language = 'en', sessionId?: string | null, runId?: string | null, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
+    const body = { messages, language, session_id: sessionId || undefined, context: runId ? { run_id: runId } : undefined }
+    const res = await fetch('/api/agent/chat', { ...send('POST', body), signal })
     if (!res.ok || !res.body) {
-      yield { type: 'error', text: await res.text() }
+      yield { type: 'error', text: await errText(res) }
       return
     }
     const reader = res.body.getReader()

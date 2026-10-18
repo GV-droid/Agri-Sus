@@ -19,11 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.datastructures import MutableHeaders
 
-from . import agent, gemini, service, trade
+from . import agent, chats, gemini, policies, service, trade
+from . import store as persist
 from .config import settings
 from .data import PLAN_YEARS, store
 from .optimizer import INSTRUMENTS
-from .scenarios import BUDGET_MODES, MAX_TRADE_CUTS, SCENARIOS, sanitize_overrides, scenario_params
+from .scenarios import BUDGET_MODES, HORIZON, MAX_TRADE_CUTS, SCENARIOS, sanitize_overrides, scenario_params
 
 # policy levers exposed as UI controls; a scenario that presets one of them (e.g. gw_mode) tells the UI via /api/meta
 LEVER_KEYS = {"max_shift_pct", "cereal_floor_pct", "gw_mode", "import_target_pct", "incentive_budget_cr",
@@ -182,9 +183,12 @@ def _solve_quota(req: Request) -> None:
 def _warm() -> None:
     def w():
         store()
-        for sc in SCENARIOS:  # baseline first, then pre-solve every crisis scenario so demo clicks are instant
-            try:
+        persist.status()  # connect the policy/chat/run stores once, off the request path
+        for sc in SCENARIOS:  # baseline first, then every crisis scenario so demo clicks are instant: loaded from the
+            try:              # shared run store when an earlier instance already solved them, else solved here
+                t = time.time()
                 service.run(sc)
+                print(f"[warm] {sc}: ready in {time.time() - t:.1f}s")
             except Exception as e:  # pragma: no cover
                 print(f"[warm] {sc}: {e}")
     threading.Thread(target=w, daemon=True).start()
@@ -193,15 +197,21 @@ def _warm() -> None:
 @app.get("/api/health")
 def health():
     return {"status": "ok", "gemini": settings.gemini_enabled, "data_backend": settings.data_backend,
-            "project": bool(settings.project)}
+            "project": bool(settings.project), "store": persist.status()}
 
 
 @app.get("/api/meta")
 def meta():
+    return _meta()
+
+
+@lru_cache(maxsize=1)
+def _meta() -> dict:
     with open(METRICS_PATH) as f:
         metrics = json.load(f)
     return {
         "plan_years": PLAN_YEARS,
+        "horizon": HORIZON,
         "scenarios": [{"id": k, "label": v["label"], "description": v["description"],
                        "levers": {a: x for a, x in scenario_params(k).items() if a in LEVER_KEYS},
                        # year a climate shock hits, so the UI can show it (other years are unaffected by design)
@@ -222,6 +232,7 @@ def meta():
         "languages": agent.LANGUAGES,
         "budget_modes": [{"id": k, "label": v} for k, v in BUDGET_MODES.items()],
         "instruments": [{"id": k, "label": v} for k, v in INSTRUMENTS.items()],
+        "store": persist.status(),
         "trade": {"fiscal_year": trade.latest_fy(), "max_cuts": MAX_TRADE_CUTS,
                   "products": [{"product": p_["product"], "group": p_["group"], "total_kt": p_["total_kt"],
                                 "suppliers": [x["country"] for x in p_["suppliers"][:6]]}
@@ -288,6 +299,14 @@ class SimRequest(BaseModel):
     overrides: dict = {}
 
 
+def _run_response(res: dict, request: Request) -> Response:
+    """A plan as JSON, gzipped once per run and reused (the UI fetches the same ~2.5 MB plan repeatedly)."""
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(service.public_gzip(res), media_type="application/json",
+                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return JSONResponse(service.public(res))
+
+
 @app.post("/api/simulate")
 def simulate(req: SimRequest, request: Request):
     try:
@@ -298,8 +317,8 @@ def simulate(req: SimRequest, request: Request):
         raise HTTPException(400, "unknown scenario")
     if req.scenario != "gemini_outlook":
         hit = service.peek(req.scenario, req.overrides)
-        if hit is not None:  # cached runs are free; only new solves count against the rate limit
-            return service.public(hit)
+        if hit is not None:  # cached and stored runs are free; only new solves count against the rate limit
+            return _run_response(hit, request)
     _solve_quota(request)
     if req.scenario == "gemini_outlook":
         if not settings.gemini_enabled:
@@ -317,15 +336,22 @@ def simulate(req: SimRequest, request: Request):
         out["params"] = {**out["params"], "scenario": "gemini_outlook"}  # copy: never mutate the cached run
         out["outlook"] = o
         return out
-    return service.public(service.run(req.scenario, req.overrides))
+    return _run_response(service.run(req.scenario, req.overrides), request)
+
+
+@app.get("/api/solve-estimate")
+def solve_estimate():
+    return {"seconds": service.solve_estimate_s()}
 
 
 @app.get("/api/run/{run_id}")
-def get_run(run_id: str):
+def get_run(run_id: str, request: Request):
+    if not service.valid_run_id(run_id):
+        raise HTTPException(400, "invalid run id")
     r = service.get(run_id)
     if not r:
         raise HTTPException(404, "run expired")
-    return service.public(r)
+    return _run_response(r, request)
 
 
 @app.get("/api/district/{code}")
@@ -341,8 +367,9 @@ def district(code: int, run_id: Optional[str] = None):
 @app.get("/api/district/{code}/candidates")
 def district_candidates(code: int, run_id: Optional[str] = None, year: Optional[int] = None):
     r = (service.get(run_id) if run_id else None) or service.run("baseline")
-    if year is not None and year not in PLAN_YEARS:
-        raise HTTPException(400, f"year must be one of {PLAN_YEARS}")
+    years = [int(k["year"]) for k in r["kpis"]]
+    if year is not None and year not in years:
+        raise HTTPException(400, f"year must be one of {years}")
     out = service.candidates(r, code, year)
     if "error" in out:
         raise HTTPException(404, out["error"])
@@ -367,6 +394,8 @@ def trade_decompose(country: str, product: str, pct: float = 100.0):
 class ChatRequest(BaseModel):
     messages: list = Field(max_length=100)  # only the last 12 turns are used
     language: str = Field("en", max_length=8)
+    session_id: Optional[str] = Field(None, max_length=16)  # saved chat session to append to (new one if absent)
+    context: Optional[dict] = None  # {"run_id": the plan on the user's screen (a run or a saved policy "p-...")}
 
 
 class BriefRequest(BaseModel):
@@ -426,6 +455,12 @@ async def _sse(events, heartbeat: float = 10.0):
         except Exception as e:  # pragma: no cover
             put({"type": "error", "text": f"agent failed ({type(e).__name__})"})
         finally:
+            close = getattr(events, "close", None)
+            if close is not None:
+                try:
+                    close()  # runs the generators' cleanup (e.g. saving the chat) when the visitor left early
+                except Exception:  # pragma: no cover
+                    pass
             put(_SSE_END)
 
     threading.Thread(target=pump, daemon=True, name="sse-pump").start()
@@ -444,6 +479,50 @@ async def _sse(events, heartbeat: float = 10.0):
         stop.set()
 
 
+def _recorded(events, sid: str, question: str, language: str):
+    """Pass the co-pilot's events through and save the exchange to the shared chat session afterwards."""
+    yield {"type": "session", "id": sid}
+    acc: dict = {"content": [], "citations": [], "policies": [], "simulations": [], "model": None, "error": None}
+    saved = False
+
+    def save() -> None:
+        if not question:
+            return
+        ans = {**acc, "content": "".join(acc["content"]).strip() or (acc["error"] or "(no answer)")}
+        try:
+            chats.record(sid, question, ans, language)
+        except Exception as e:  # pragma: no cover - never break an answer because the history store failed
+            print(f"[chats] session {sid} not saved: {type(e).__name__}: {e}")
+
+    try:
+        for ev in events:
+            t = ev.get("type")
+            if t == "done" and not saved:  # store the exchange first: "done" stays the last event of the stream
+                save()
+                saved = True
+                yield {"type": "session", "id": sid, "saved": True}
+            elif t == "text":
+                acc["content"].append(str(ev.get("text", "")))
+            elif t == "citations":
+                acc["citations"] = ev.get("citations") or []
+            elif t == "policy":
+                acc["policies"].append({"id": ev.get("id"), "name": ev.get("name")})
+            elif t == "simulation":
+                acc["simulations"].append(ev.get("run_id"))
+            elif t == "model":
+                acc["model"] = ev.get("model")
+            elif t == "error":
+                acc["error"] = ev.get("text")
+            yield ev
+        if not saved:
+            save()
+            saved = True
+            yield {"type": "session", "id": sid, "saved": True}
+    finally:
+        if not saved:  # the visitor left mid-answer: keep what was said so far
+            save()
+
+
 @app.post("/api/agent/chat")
 def chat(req: ChatRequest, request: Request):
     _rate_limit(request)
@@ -451,11 +530,132 @@ def chat(req: ChatRequest, request: Request):
     msgs = [m for m in req.messages if isinstance(m, dict) and m.get("role") in ("user", "assistant")][-12:]
     for m in msgs:
         m["content"] = str(m.get("content", ""))[:4000]
+    lang = req.language if req.language in agent.LANGUAGES else "en"
+    rid = (req.context or {}).get("run_id")
+    ctx = {"run_id": rid} if service.valid_run_id(rid) else {}
+    sid = req.session_id if chats.valid_id(req.session_id) else chats.new_id()
+    question = msgs[-1]["content"] if msgs and msgs[-1]["role"] == "user" else ""
     # what-ifs the co-pilot runs count against this visitor's simulation limit, like the UI's own solves
-    events = agent.chat(msgs, req.language if req.language in agent.LANGUAGES else "en",
-                        on_new_solve=lambda: _solve_quota(request))
-    return StreamingResponse(_sse(events), media_type="text/event-stream",
+    events = agent.chat(msgs, lang, on_new_solve=lambda: _solve_quota(request), context=ctx)
+    return StreamingResponse(_sse(_recorded(events, sid, question, lang)), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---- saved policies & chat sessions (shared by everyone using this deployment; no login)
+class PolicySave(BaseModel):
+    run_id: str = Field(..., max_length=16)
+    name: str = Field(..., max_length=200)
+    note: str = Field("", max_length=2000)
+
+
+class PolicyPatch(BaseModel):
+    name: Optional[str] = Field(None, max_length=200)
+    note: Optional[str] = Field(None, max_length=2000)
+    deleted: Optional[bool] = None
+
+
+def _write_quota(request: Request) -> None:
+    _rate_limit(request, limit=60, window=600, bucket="store")
+
+
+def _store_error(e: Exception) -> HTTPException:
+    print(f"[store] {type(e).__name__}: {e}")
+    return HTTPException(503, "The policy library is unavailable right now; please retry.")
+
+
+@app.get("/api/policies")
+def list_policies():
+    try:
+        rows = policies.list_all()
+    except Exception as e:
+        raise _store_error(e)
+    return {"policies": rows, "max": policies.MAX_POLICIES, "store": persist.status()}
+
+
+@app.post("/api/policies")
+def save_policy(req: PolicySave, request: Request):
+    if not service.valid_run_id(req.run_id):
+        raise HTTPException(400, "invalid run id")
+    _write_quota(request)
+    res = service.get(req.run_id)
+    if res is None:
+        raise HTTPException(404, "this plan is no longer available - run the optimizer again, then save")
+    try:
+        return policies.save(res, req.name, req.note, source="user")
+    except OverflowError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise _store_error(e)
+
+
+@app.get("/api/policies/{pid}")
+def get_policy(pid: str):
+    m = policies.get_meta(pid)
+    if not m:
+        raise HTTPException(404, "policy not found")
+    return m
+
+
+@app.patch("/api/policies/{pid}")
+def patch_policy(pid: str, req: PolicyPatch, request: Request):
+    if not policies.POLICY_ID.match(pid):
+        raise HTTPException(404, "policy not found")
+    _write_quota(request)
+    m = policies.update(pid, name=req.name, note=req.note, deleted=req.deleted)
+    if not m:
+        raise HTTPException(404, "policy not found")
+    return m
+
+
+@app.delete("/api/policies/{pid}")
+def delete_policy(pid: str, request: Request, purge: bool = False):
+    """Soft delete (restorable from the Deleted tab); purge=true removes a deleted policy and its snapshot for good."""
+    if not policies.POLICY_ID.match(pid):
+        raise HTTPException(404, "policy not found")
+    _write_quota(request)
+    if purge:
+        m = policies.get_meta(pid)
+        if not m:
+            raise HTTPException(404, "policy not found")
+        if not m.get("deleted"):
+            # the library has no login, so one request must never wipe a live policy
+            raise HTTPException(409, "Move the policy to Deleted first; only deleted policies can be removed for good.")
+        if not policies.purge(pid):
+            raise HTTPException(404, "policy not found")
+        return {"id": pid, "purged": True}
+    m = policies.update(pid, deleted=True)
+    if not m:
+        raise HTTPException(404, "policy not found")
+    return m
+
+
+@app.get("/api/chats")
+def list_chats():
+    try:
+        rows = chats.list_all()
+    except Exception as e:
+        raise _store_error(e)
+    return {"chats": rows, "store": persist.status()}
+
+
+@app.get("/api/chats/{cid}")
+def get_chat(cid: str):
+    d = chats.get(cid)
+    if not d:
+        raise HTTPException(404, "chat not found")
+    return d
+
+
+@app.delete("/api/chats/{cid}")
+def delete_chat(cid: str, request: Request):
+    if not chats.valid_id(cid):
+        raise HTTPException(404, "chat not found")
+    _write_quota(request)
+    if not chats.delete(cid):
+        raise HTTPException(404, "chat not found")
+    return {"id": cid, "deleted": True}
 
 
 @app.get("/api/forecast")

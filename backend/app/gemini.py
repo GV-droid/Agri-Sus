@@ -1,5 +1,5 @@
 """Gemini client helpers: Vertex AI (default on Cloud Run) or Gemini API key; model fallback chain;
-Google Search grounding with citations; Gemini-generated 2027-30 outlook that feeds the simulator."""
+Google Search grounding with citations; Gemini-generated outlook for every plan year that feeds the simulator."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ from datetime import date
 from functools import lru_cache
 
 from .config import settings
+from .data import MAX_HORIZON, PLAN_START
 
 
 @lru_cache(maxsize=1)
@@ -112,19 +113,23 @@ def grounded_search(question: str) -> dict:
     return {"answer": resp.text, "citations": cites[:8], "search_queries": queries, "model": model}
 
 
-FORECAST_PROMPT = """You are the forecasting agent of Agri Sus, India's agricultural policy simulator.
+OUTLOOK_YEARS = list(range(PLAN_START, PLAN_START + MAX_HORIZON))  # one cached outlook serves every plan horizon
+
+FORECAST_PROMPT = f"""You are the forecasting agent of Agri Sus, India's agricultural policy simulator.
 Use Google Search to gather the latest official and expert outlooks, preferring those issued in the last three
 months (IMD/WMO/NOAA ENSO forecasts, IMD long-range monsoon outlooks, USDA/FAO/World Bank commodity price outlooks for
 palm oil, soybean oil and pulses, Indian import duty changes). Then produce a quantitative outlook for India for
-agri-years 2027-2030.
+agri-years {OUTLOOK_YEARS[0]}-{OUTLOOK_YEARS[-1]}.
 
 Return ONLY a JSON object (no markdown) with this schema:
-{"generated_for": "2027-2030",
- "years": [{"year": 2027, "enso_phase": "El Nino|La Nina|Neutral", "kharif_rain_pct_vs_normal": number (-30..+20),
-            "rabi_tmax_anomaly_c": number (-1..3), "confidence": "low|medium|high"}, ... for 2027,2028,2029,2030],
- "import_price_multipliers": {"edible_oils": number (0.6..2.0, 1.0 = 2024-25 landed price), "pulses": number},
- "rationale": "max 120 words, cite the agencies/reports you used"}
-Be calibrated: beyond ~9 months ENSO skill is low, so lean towards climatology (0) with low confidence."""
+{{"generated_for": "{OUTLOOK_YEARS[0]}-{OUTLOOK_YEARS[-1]}",
+ "years": [{{"year": {OUTLOOK_YEARS[0]}, "enso_phase": "El Nino|La Nina|Neutral", "kharif_rain_pct_vs_normal": number (-30..+20),
+            "rabi_tmax_anomaly_c": number (-1..3), "confidence": "low|medium|high"}}, ... one entry for each of
+            {", ".join(map(str, OUTLOOK_YEARS))}],
+ "import_price_multipliers": {{"edible_oils": number (0.6..2.0, 1.0 = 2024-25 landed price), "pulses": number}},
+ "rationale": "max 120 words, cite the agencies/reports you used"}}
+Be calibrated: beyond ~9 months ENSO skill is low, so lean towards climatology (0) with low confidence; for the
+later years use climatology unless there is a clear multi-year signal."""
 
 
 def _extract_json(text: str) -> dict:
@@ -143,7 +148,7 @@ def outlook_cached() -> bool:
 
 
 def gemini_outlook(force: bool = False) -> dict:
-    """Gemini (grounded) 2027-30 monsoon / heat / import-price outlook, cached for 6 h. One call at a time: concurrent
+    """Gemini (grounded) monsoon / heat / import-price outlook for every possible plan year, cached for 6 h. One call at a time: concurrent
     requests on a cold cache wait for the first instead of each paying for a grounded Gemini call."""
     with _forecast_lock:
         if not force and outlook_cached():
@@ -164,7 +169,7 @@ def outlook_to_params(o: dict) -> dict:
     shocks = []
     for y in o.get("years", []):
         try:
-            if int(y["year"]) not in (2027, 2028, 2029, 2030):
+            if int(y["year"]) not in OUTLOOK_YEARS:
                 continue
             shocks.append({"year": int(y["year"]),
                            "kharif_rain_pct": max(-30.0, min(20.0, float(y.get("kharif_rain_pct_vs_normal", 0)))),

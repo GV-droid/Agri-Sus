@@ -8,7 +8,9 @@ year, the hard guardrails hold (farmer income >= today in every district, cereal
 plan in the expected direction, mandate scenarios apply their lever, input validation rejects bad requests, and
 the decision trace, policy brief and co-pilot respond. Also covers the policy-instrument mix (fixed budget and
 least-cost modes), the fiscal ledger and MROPI tiers, bilateral trade shocks (India Data Portal import statistics),
-next-crop recommendations and the BigQuery ML champion/challenger state. Takes ~3 minutes on a cold server.
+next-crop recommendations, the BigQuery ML champion/challenger state, saved policies (snapshot, reopen without
+re-solving, rename, soft delete, restore, purge), shared chat sessions, multi-country x multi-commodity trade shocks
+and plan horizons other than four years. Takes ~4 minutes on a cold server.
 """
 from __future__ import annotations
 
@@ -34,6 +36,16 @@ def call(path: str, body: dict | None = None, timeout: int = 300):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
             return r.status, (json.loads(raw) if r.headers.get_content_type() == "application/json" else raw)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()[:300]
+
+
+def send(method: str, path: str, body: dict | None = None, timeout: int = 60):
+    req = urllib.request.Request(BASE + path, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"content-type": "application/json"}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()[:300]
 
@@ -219,6 +231,68 @@ def main() -> int:
           s == 200 and t_.get("moves_2030") and t_.get("rejected_alternatives") is not None
           and any(x["year"] == 0 for x in t_.get("rotation_timeline", [])),
           f"{len(t_.get('moves_2030', []))} moves")
+    # ---- plan horizon: 2-8 years from 2027 (default 4)
+    six = simulate(horizon_years=6)
+    ys = [k["year"] for k in six["kpis"]]
+    sh_years = sorted({int(t["id"][-4:]) for t in six.get("robustness", []) if t["id"][-4:].isdigit()})
+    check("horizon: a 6-year plan runs 2027-2032, keeps the guardrails and places stress tests inside the plan",
+          ys == list(range(2027, 2033)) and six.get("plan_years") == ys and six["kpis"][-1]["assi"] > six["kpis"][-1]["assi_status_quo"]
+          and all(2027 <= y <= 2032 for y in sh_years) and simulate(horizon_years=4)["run_id"] == base["run_id"],
+          f"years {ys[0]}-{ys[-1]}, ASSI {six['kpis'][-1]['assi']}, stress years {sh_years}")
+    s7, _ = call("/api/simulate", {"scenario": "baseline", "overrides": {"horizon_years": 40}})
+    s8, m_ = call("/api/meta")
+    check("horizon: meta advertises 2-8 years and out-of-range values are clamped, never solved as given",
+          s8 == 200 and m_.get("horizon", {}).get("max") == 8 and s7 in (200, 429), f"meta {m_.get('horizon')}, 40 years -> {s7}")
+
+    # ---- whole-plan totals (least-cost mode lists the total cost over the span)
+    lc = simulate(budget_mode="min_budget")
+    tot = (lc.get("policy_mix") or {}).get("totals") or {}
+    by_year = sum(float(x["outlay_cr"]) for x in lc["policy_mix"]["budget_path_cr"])
+    check("least-cost mode reports the total cost over the whole plan",
+          tot.get("outlay_cr", 0) > 0 and tot.get("years") == 4 and abs(by_year - tot["outlay_cr"]) < 2,
+          f"total Rs {tot.get('outlay_cr', 0):,.0f} cr over {tot.get('first_year')}-{tot.get('last_year')}, returns Rs {tot.get('returns_cr', 0):,.0f} cr")
+
+    # ---- multi-country x multi-commodity trade shock
+    cuts = [{"country": "Indonesia", "product": "palm oil", "pct": 40}, {"country": "Malaysia", "product": "palm oil", "pct": 40},
+            {"country": "Canada", "product": "lentils", "pct": 60}]
+    sM, mt = call("/api/simulate", {"scenario": "baseline", "overrides": {"trade_cuts": cuts}})
+    got = [(c["country"], c["product"]) for c in (mt.get("trade", {}).get("cuts", []) if sM == 200 else [])]
+    check("trade shock: several countries and commodities at once",
+          sM == 200 and len(mt["params"].get("trade_cuts", [])) == 3 and len(got) == 3, f"{sM}: {got}")
+
+    # ---- saved policies: snapshot -> reopen without re-solving -> rename -> soft delete -> restore -> purge
+    s, pol = call("/api/policies", {"run_id": base["run_id"], "name": "Smoke test policy", "note": "created by smoke_test.py"})
+    pid = pol.get("id", "") if s == 200 and isinstance(pol, dict) else ""
+    t0 = time.time()
+    s2, run = call(f"/api/run/p-{pid}") if pid else (0, {})
+    dt = time.time() - t0
+    s3, trp = call(f"/api/district/{pun['district_code']}?run_id=p-{pid}") if pid else (0, {})
+    check("policy: saved snapshot reopens with identical results, without re-solving",
+          s2 == 200 and run["kpis"] == base["kpis"] and len(run["districts"]) == len(base["districts"])
+          and (run.get("policy") or {}).get("name") == "Smoke test policy" and s3 == 200
+          and trp["trace"].get("moves_2030") == t_.get("moves_2030") and dt < 15,
+          f"id {pid}, reopened in {dt:.1f}s")
+    s4, _ = call("/api/policies", {"run_id": base["run_id"], "name": "Smoke test policy"})
+    s5, lst = call("/api/policies")
+    mine = [p for p in (lst.get("policies", []) if s5 == 200 else []) if p["id"] == pid]
+    s6, ren = send("PATCH", f"/api/policies/{pid}", {"name": "Smoke test policy (renamed)"})
+    s7, dl = send("DELETE", f"/api/policies/{pid}")
+    s8, rs = send("PATCH", f"/api/policies/{pid}", {"deleted": False})
+    s9a, _ = send("DELETE", f"/api/policies/{pid}?purge=true")  # a live policy cannot be purged in one request
+    send("DELETE", f"/api/policies/{pid}")
+    s9, pg = send("DELETE", f"/api/policies/{pid}?purge=true")
+    s10, _ = call(f"/api/run/p-{pid}")
+    check("policy library: list, rename, soft delete, restore and purge",
+          s4 == 200 and len(mine) == 1 and (mine[0].get("summary") or {}).get("assi") is not None
+          and s6 == 200 and ren.get("name", "").endswith("(renamed)") and s7 == 200 and dl.get("deleted") is True
+          and s8 == 200 and rs.get("deleted") is False and s9a == 409 and s9 == 200 and s10 == 404,
+          f"store {lst.get('store', {}).get('documents')} + {lst.get('store', {}).get('snapshots')}")
+    b1, _ = call("/api/run/p-NOT_VALID!")
+    b2, _ = send("PATCH", "/api/policies/..%2Fx", {"name": "x"})
+    b3, _ = call("/api/policies", {"run_id": "../../etc", "name": "x"})
+    b4, _ = call("/api/chats/zzz")
+    check("policy/chat ids are validated", b1 in (400, 404) and b2 in (400, 404, 405) and b3 in (400, 422) and b4 == 404, f"{b1}/{b2}/{b3}/{b4}")
+
     s, b = call("/api/brief", {"run_id": base["run_id"], "state": "Punjab"})
     check("policy brief", s == 200 and len(b.get("markdown", "")) > 400 and "Punjab" in b["markdown"], b.get("model", "") if s == 200 else str(b))
 
@@ -232,6 +306,33 @@ def main() -> int:
     check("co-pilot answers a trade shock with the trade tool and the re-optimised plan",
           any("trade" in t for t in tools) and evs[-1]["type"] == "done" and "Indonesia" in text,
           f"tools: {', '.join(tools)}")
+
+    # ---- shared chat sessions: every exchange is saved; sessions can be listed, reopened and deleted
+    sid = next((e["id"] for e in evs if e["type"] == "session"), None)
+    saved = any(e["type"] == "session" and e.get("saved") for e in evs)
+    s1, cl = call("/api/chats")
+    s2, cs = call(f"/api/chats/{sid}") if sid else (0, {})
+    s3, _ = send("DELETE", f"/api/chats/{sid}") if sid else (0, {})
+    s4, _ = call(f"/api/chats/{sid}") if sid else (0, {})
+    check("chat sessions: saved, listed, reopened and deleted",
+          saved and s1 == 200 and any(c["id"] == sid for c in cl.get("chats", [])) and s2 == 200
+          and len(cs.get("messages", [])) == 2 and s3 == 200 and s4 == 404, f"session {sid}")
+
+    # ---- the co-pilot creates a policy when asked, saves it and offers it to open
+    evs = chat("Create a policy called \"Smoke copilot policy\" with a 9000 crore incentive budget and save it")
+    pe = [e for e in evs if e["type"] == "policy"]
+    ok = bool(pe) and pe[0].get("run_id", "").startswith("p-") and evs[-1]["type"] == "done"
+    if pe:
+        s5, pr = call(f"/api/run/{pe[0]['run_id']}")
+        ok = ok and s5 == 200 and pr["params"].get("incentive_budget_cr") == 9000
+        send("DELETE", f"/api/policies/{pe[0]['id']}")
+        send("DELETE", f"/api/policies/{pe[0]['id']}?purge=true")
+    for e in evs:
+        if e["type"] == "session":
+            send("DELETE", f"/api/chats/{e['id']}")
+            break
+    check("co-pilot creates and saves a policy from a conversation", ok,
+          f"{pe[0]['name'] if pe else 'no policy event'}")
 
     failed = [r for r in results if not r[1]]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed against {BASE}")

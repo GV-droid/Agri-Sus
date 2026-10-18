@@ -24,3 +24,6 @@ docs
 bigquery
 deploy
 scripts
+
+# local store for saved policies / chats / run snapshots (Firestore + Cloud Storage on Google Cloud)
+.agrisus-store

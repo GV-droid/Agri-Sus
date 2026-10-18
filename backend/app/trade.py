@@ -62,13 +62,15 @@ def match_product(cur: pd.DataFrame, product: str) -> tuple[str, str] | None:
     p = product.strip().lower().replace("_", " ")
     if p in GROUP_ALIASES:
         return "group", GROUP_ALIASES[p]
-    p = SYNONYMS.get(p, p)
     labels = sorted(cur["product"].dropna().unique())
-    for rule in (lambda l: l.lower() == p, lambda l: l.lower().startswith(p),
-                 lambda l: p in re.split(r"[ /()-]+", l.lower()), lambda l: p in l.lower()):
-        hits = [l for l in labels if rule(l)]
-        if hits:
-            return "product", hits[0]
+    tries = [p] + ([p[:-1]] if p.endswith("s") and len(p) > 4 else [])  # "lentils" -> "lentil"
+    for p in tries:
+        p = SYNONYMS.get(p, p)
+        for rule in (lambda l: l.lower() == p, lambda l: l.lower().startswith(p),
+                     lambda l: p in re.split(r"[ /()-]+", l.lower()), lambda l: p in l.lower()):
+            hits = [l for l in labels if rule(l)]
+            if hits:
+                return "product", hits[0]
     return None
 
 

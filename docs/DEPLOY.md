@@ -14,6 +14,8 @@ What you get:
 | **BigQuery** | All data tables (partitioned + clustered), the optimizer's decision traces and the policy budget ledger |
 | **BigQuery ML** | Two yield models (linear + **boosted tree**) trained on 105k district-crop-years, champion/challenger |
 | **Vertex AI Model Registry** | Both BigQuery ML models are registered there automatically |
+| **Firestore** *(free tier)* | The shared library of saved policies and co-pilot chat sessions (survives restarts and redeploys) |
+| **Cloud Storage** *(free tier)* | Snapshots of solved plans, so a saved policy re-opens instantly with its map and every number, without re-running the optimizer |
 | **Google Earth Engine** *(optional)* | Recomputes the climate inputs from CHIRPS, ERA5-Land and NASA NEX-GDDP-CMIP6 for all 785 districts |
 
 ---
@@ -82,16 +84,20 @@ It asks two questions:
 | `Continue? [Y/n]` | press **Enter** |
 | `Run the Earth Engine pipeline now? [y/N]` | press **Enter** (= No) the first time. You can add it later, see [below](#optional-google-earth-engine-climate-pipeline). |
 
-Then wait. You will see green lines for each of the 6 steps:
+Then wait. You will see green lines for each of the 7 steps:
 
 | Step | What happens | Time |
 |---|---|---|
-| 1/6 | Turns on the Google Cloud services (Cloud Run, Cloud Build, Artifact Registry, Vertex AI, BigQuery) | 1–2 min |
-| 2/6 | Creates a dedicated service account `agri-sus-run` that may only call Gemini and use the Agri Sus BigQuery dataset | < 1 min |
-| 3/6 | Creates the BigQuery dataset `agri_sus_mvp`, loads 13 tables, creates the ledger/trace tables and views, trains the two BigQuery ML yield models and registers them in Vertex AI | 5–10 min |
-| 4/6 | Google Earth Engine (skipped unless you said yes) | — |
-| 5/6 | Cloud Build builds the website container and stores it in Artifact Registry | 6–10 min |
-| 6/6 | Deploys to Cloud Run and prints the URL | 1–2 min |
+| 1/7 | Turns on the Google Cloud services (Cloud Run, Cloud Build, Artifact Registry, Vertex AI, BigQuery, Firestore, Cloud Storage) | 1–2 min |
+| 2/7 | Creates a dedicated service account `agri-sus-run` that may only call Gemini and use the Agri Sus BigQuery dataset | < 1 min |
+| 3/7 | Creates the storage for saved policies and chats: the Firestore `(default)` database (only if the project has none) and a private Cloud Storage bucket `YOUR_PROJECT_ID-agri-sus-store`. Cached plans in it are deleted after 30 days; saved policies are kept. Only the app's service account can use them. Both stay inside Google's always-free tier | < 1 min |
+| 4/7 | Creates the BigQuery dataset `agri_sus_mvp`, loads 13 tables, creates the ledger/trace tables and views, trains the two BigQuery ML yield models and registers them in Vertex AI | 5–10 min |
+| 5/7 | Google Earth Engine (skipped unless you said yes) | — |
+| 6/7 | Cloud Build builds the website container and stores it in Artifact Registry | 6–10 min |
+| 7/7 | Deploys to Cloud Run and prints the URL | 1–2 min |
+
+You never paste a key or password: the site reaches Gemini, BigQuery, Firestore and Cloud Storage with its own
+service account.
 
 At the end you will see:
 
@@ -112,9 +118,17 @@ That link is your site. Share it with anyone — no login needed.
    *"What if Indonesia stops selling palm oil to India?"* — you will see each tool the agent calls.
 4. Click a district on the map → **🌱 Next crop** for the recommended crop next season.
 5. Click **✦ Policy brief** for a one-page brief.
+6. Click **💾 Save as policy** (left panel), give it a name, then open **📁 Policies**. Your policy is in the list; click **Open** and
+   the map and every tab come back instantly from the saved copy. Ask the co-pilot *"Create a 6-year plan for an El
+   Niño year and save it as El Niño-proof"*: it builds and saves the policy and shows an **Open policy** button.
+   Earlier conversations are under **💬 Chats** in the co-pilot.
+7. To check that saved policies survive a restart, restart the site (the command is in *Troubleshooting*) and open
+   **📁 Policies** again: they are still there. The note at the bottom of that window says
+   *Stored in Firestore + Cloud Storage: shared by everyone and kept across restarts.*
 
 Technical check (optional): open `https://YOUR-URL/api/meta`. It shows `"data_backend": "BigQuery"`, the Gemini
 model in use, which yield model is active (`yield_engine`) and which climate table is used (`climate_source`).
+`https://YOUR-URL/api/health` shows the policy library's storage (`"store"`).
 
 ---
 
@@ -156,6 +170,8 @@ Put a setting in front of the command, e.g. `MIN_INSTANCES=0 bash deploy/deploy.
 | `YIELD_MODEL` | `auto` | `auto`: use the BigQuery ML boosted tree only if it beats the linear model on the 2020–24 hold-out; `bqml`: always use it; `prior`: always use the transparent agronomic model. |
 | `USE_EARTH_ENGINE` | ask | `1` run the Earth Engine pipeline, `0` skip without asking. |
 | `SKIP_BIGQUERY` | `0` | `1` = code-only update: rebuild and redeploy the site but keep the BigQuery tables and models. |
+| `STORE_BUCKET` | `YOUR_PROJECT_ID-agri-sus-store` | The Cloud Storage bucket for saved policies, chats and cached plans. Bucket names are global: if the default is taken, the script adds your project number, or you can pick a name yourself. |
+| `FIRESTORE_LOCATION` | same as `REGION` | Where the Firestore database is created (only if the project has none yet). Cannot be changed later. |
 | `BQ_LOCATION` | `US` | BigQuery location (multi-region `US` or `EU`, or a region like `asia-south1`). |
 | `GEMINI_MAX_REQUESTS_PER_10MIN` | `200` | Safety cap: the most paid Gemini calls (co-pilot questions, briefs, outlooks) one server makes in 10 minutes, across all visitors. Each visitor also has their own smaller limits. |
 | `API_DOCS` | `false` | `1` publishes the interactive API documentation at `/docs`. Hidden by default so the site exposes less to attackers. |
@@ -196,6 +212,9 @@ Upload the new files (Option A: `git pull`; Option B: upload the new zip and unz
 SKIP_BIGQUERY=1 bash deploy/deploy.sh      # about 10 minutes
 ```
 
+This also sets up anything new: for example, a site deployed before saved policies existed gets its Firestore
+database and storage bucket in step 3/7. Saved policies and chats are kept across updates.
+
 ### Automatic deploys from GitHub (optional, for developers)
 
 `cloudbuild.yaml` builds, pushes to Artifact Registry and deploys to Cloud Run. Run `deploy/deploy.sh` once first
@@ -228,6 +247,8 @@ SKIP_BIGQUERY=1 bash deploy/deploy.sh      # about 10 minutes
 | Cloud Run, `MIN_INSTANCES=0` | only while people use it (~$0.15 per busy hour), **$0 when idle** |
 | Gemini on Vertex AI | well under $0.05 per agent question with Gemini Flash; Google Search grounding is billed per grounded answer (a few cents) |
 | BigQuery storage + queries | ~100 MB of data — inside the free tier |
+| Firestore (saved policies, chats) | **$0** — far inside the always-free tier (1 GiB stored, 50,000 reads and 20,000 writes a day). Listing the library costs one read while nothing has changed |
+| Cloud Storage (plan snapshots) | **$0** in `us-central1`, `us-east1` or `us-west1` (5 GB free); a few cents a month in other regions. Cached plans are deleted after 30 days |
 | BigQuery ML training (each full deploy) | typically under $1 |
 | Cloud Build | about $0.20 per build |
 | Artifact Registry | ~$0.05 per month per stored image |
@@ -250,7 +271,11 @@ Set it back to `1` on demo day so judges never wait. Set a budget alert at
 | `The BigQuery step did not finish` | The site still works with the data built into the container. Read the red error above it, fix it, and re-run (it is safe to re-run). |
 | `Vertex AI Model Registry registration failed - training without it` | Harmless: the BigQuery ML models are still trained and used; they just do not appear in the Vertex AI Model Registry. |
 | The header shows **Data snapshot** instead of **BigQuery**, `/api/meta` shows `local snapshot (BigQuery read failed: Forbidden)`, or the agent says `BigQuery rejected the query (Forbidden)` | The site's service account cannot read the dataset (sites deployed before this fix). Re-run `SKIP_BIGQUERY=1 bash deploy/deploy.sh` with the current files (this also lets the site log its runs to its own dataset). Quick read-only fix in place: `P=$(gcloud config get-value project); gcloud projects add-iam-policy-binding $P --member serviceAccount:agri-sus-run@$P.iam.gserviceaccount.com --role roles/bigquery.dataViewer --condition=None -q`, wait a minute, then restart the site: `gcloud run services update agri-sus --region us-central1 --update-env-vars RESTARTED_AT=$(date +%s)` |
-| `/api/meta` shows `"reason": "BigQuery ML factors not available (BigQuery: NotFound)"` | The BigQuery ML training in step 3/6 did not finish. Run `bash deploy/deploy.sh` again (without `SKIP_BIGQUERY`) and read the red error in step 3/6. |
+| `/api/meta` shows `"reason": "BigQuery ML factors not available (BigQuery: NotFound)"` | The BigQuery ML training in step 4/7 did not finish. Run `bash deploy/deploy.sh` again (without `SKIP_BIGQUERY`) and read the red error in step 4/7. |
+| Step 3/7 printed `could not create the Firestore database - policies and chats will be kept in the Cloud Storage bucket instead` | Harmless: everything is kept in the bucket instead (a little slower to list). To use Firestore, create it once in the console (**Firestore → Create database → Native mode**, database ID `(default)`), then run `SKIP_BIGQUERY=1 bash deploy/deploy.sh` again. |
+| Step 3/7 printed `could not create a Cloud Storage bucket - saved policies will not survive a restart` | Bucket names are shared by everyone on Google Cloud. Pick another name: `STORE_BUCKET=agrisus-store-$RANDOM SKIP_BIGQUERY=1 bash deploy/deploy.sh`. |
+| The **📁 Policies** window says *Stored on local disk of this server only* | The site was deployed without storage (an older version, or step 3/7 failed). Run `SKIP_BIGQUERY=1 bash deploy/deploy.sh` again and read the yellow lines in step 3/7. |
+| Saving or opening a policy says *The policy library is unavailable right now* | The service account lost access to Firestore or the bucket. Run `SKIP_BIGQUERY=1 bash deploy/deploy.sh` again (it re-grants access), wait a minute and retry. |
 | The agent says `Gemini unavailable … switching to offline analyst`, or its model label shows `offline-rule-router` | Gemini models available to your project differ by region and date. Set one that your project has: `gcloud run services update agri-sus --region us-central1 --update-env-vars GEMINI_AGENT_MODEL=gemini-2.5-flash`. If Vertex AI Gemini is not available in your project at all, see *Use a Gemini API key instead of Vertex AI*. If the message ends with `The Gemini API key was rejected`, the key is wrong: replace it as described there. |
 | The co-pilot shows `Error: Failed to fetch` or `network error`, or never finishes | Sites deployed before this fix: Gemini 3 thought for about a minute per step, so a full answer ran into Cloud Run's request time limit. Update the site with the current files: `SKIP_BIGQUERY=1 bash deploy/deploy.sh` (see *Updating the site after a code change*). |
 | The co-pilot says `Gemini did not answer in time` or `Gemini needed more than 240 s` | Gemini was slow this time, so the offline analyst answered from the same tools instead. Usually temporary. To make Gemini think less per step: `gcloud run services update agri-sus --region us-central1 --update-env-vars GEMINI_THINKING_BUDGET=512`. To give it more time: `--update-env-vars GEMINI_TIMEOUT_S=150,AGENT_DEADLINE_S=420`. |
@@ -269,7 +294,9 @@ bash deploy/teardown.sh
 ```
 
 Type `DELETE` to confirm. It removes the Cloud Run service, the container images, the BigQuery dataset (including the
-BigQuery ML models, which also removes them from the Vertex AI Model Registry) and the service account.
+BigQuery ML models, which also removes them from the Vertex AI Model Registry), the storage bucket with the saved
+policies, chats and cached plans, the app's Firestore collections, and the service account. The Firestore database
+itself is left in place (it is free and other apps may use it).
 To be completely sure nothing is billed, you can instead shut down the whole project:
 **IAM & Admin → Settings → Shut down**.
 

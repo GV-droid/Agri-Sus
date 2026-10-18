@@ -1,5 +1,7 @@
 # Cloud Build CI/CD for Agri Sus: build -> push to Artifact Registry -> deploy to Cloud Run.
-# deploy/deploy.sh does the first-time setup (APIs, service account, BigQuery + BigQuery ML) - run it once first.
+# deploy/deploy.sh does the first-time setup (APIs, service account, Firestore + Cloud Storage for saved policies and
+# chats, BigQuery + BigQuery ML) - run it once first. This pipeline only updates the variables it lists
+# (--update-env-vars), so settings made by deploy.sh such as STORE_BUCKET are kept.
 # Then either run this pipeline by hand:
 #     gcloud builds submit --config cloudbuild.yaml
 # or connect the GitHub repo in Cloud Build > Triggers so every push to main redeploys.
@@ -43,6 +45,6 @@ steps:
       - --session-affinity
       - --min-instances=${_MIN_INSTANCES}
       - --max-instances=5
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=true,DATA_BACKEND=bigquery,BQ_DATASET=${_DATASET},CLIMATE_TABLE=${_CLIMATE_TABLE},YIELD_MODEL=auto,GEMINI_AGENT_MODEL=${_GEMINI_MODEL},GEMINI_FORECAST_MODEL=${_GEMINI_MODEL}
+      - --update-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=true,DATA_BACKEND=bigquery,BQ_DATASET=${_DATASET},CLIMATE_TABLE=${_CLIMATE_TABLE},YIELD_MODEL=auto,GEMINI_AGENT_MODEL=${_GEMINI_MODEL},GEMINI_FORECAST_MODEL=${_GEMINI_MODEL}
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$BUILD_ID

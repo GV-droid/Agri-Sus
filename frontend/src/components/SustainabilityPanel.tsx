@@ -93,7 +93,7 @@ export default function SustainabilityPanel({ result, year }: { result: SimResul
         </div>
       </div>
       <div className="sus-right">
-        <div className="sus-title">Forecast 2027 → 2030 <span className="muted">· shaded = range under unplanned climate shocks</span></div>
+        <div className="sus-title">Forecast {first.year} → {result.kpis[result.kpis.length - 1].year} <span className="muted">· shaded = range under unplanned climate shocks</span></div>
         <ResponsiveContainer width="100%" height={150}>
           <ComposedChart data={data} margin={{ top: 6, right: 12, bottom: 0, left: -20 }}>
             <CartesianGrid stroke="#ffffff12" />

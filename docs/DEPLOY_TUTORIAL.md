@@ -8,7 +8,8 @@ This guided tour deploys **Agri Sus** — the all-India AI policy simulator for 
 Google Cloud project. You only copy commands into the terminal below; a script does the rest.
 
 It uses Cloud Run, Cloud Build, Artifact Registry, Vertex AI (Gemini with Google Search grounding), BigQuery,
-BigQuery ML (boosted tree + linear, registered in the Vertex AI Model Registry) and, optionally, Google Earth Engine.
+BigQuery ML (boosted tree + linear, registered in the Vertex AI Model Registry), Firestore and Cloud Storage (free
+tier, for saved policies and chats) and, optionally, Google Earth Engine. You never paste a key or password.
 
 You need a project with **billing turned on** and the **Owner** role on it (true if you created it).
 
@@ -48,14 +49,15 @@ Answer the two questions:
 * `Continue? [Y/n]` → press **Enter**
 * `Run the Earth Engine pipeline now? [y/N]` → press **Enter** (No) — you can add it later
 
-The six steps take about 20–30 minutes:
+The seven steps take about 20–30 minutes:
 
 1. enable the Google Cloud APIs
 2. create the `agri-sus-run` service account (least privilege)
-3. load BigQuery and train the BigQuery ML yield models
-4. Earth Engine (skipped)
-5. build the container with Cloud Build into Artifact Registry
-6. deploy to Cloud Run
+3. create the storage for saved policies and chats (Firestore + a private Cloud Storage bucket, free tier)
+4. load BigQuery and train the BigQuery ML yield models
+5. Earth Engine (skipped)
+6. build the container with Cloud Build into Artifact Registry
+7. deploy to Cloud Run
 
 ## Open your site
 
@@ -69,6 +71,8 @@ Open that link (the first load takes about a minute while the optimizer warms up
 * open the **💰 Budget & returns** and **🚢 Trade shocks** tabs
 * ask the agent: *What if Indonesia stops selling palm oil to India?*
 * click a district → **🌱 Next crop**
+* click **💾 Save as policy**, then **📁 Policies** → **Open**: the plan comes back instantly from the saved copy
+* ask the agent: *Create a 6-year plan for an El Niño year and save it as El Niño-proof*, then click **Open policy**
 
 ## Optional: Google Earth Engine
 
@@ -80,6 +84,16 @@ Then run (1–2 hours; if Cloud Shell disconnects just run it again — finished
 ```sh
 USE_EARTH_ENGINE=1 bash deploy/deploy.sh
 ```
+
+## Update the site after a code change
+
+Get the new files into this folder (`git pull`, or upload and unzip the new zip), then:
+
+```sh
+SKIP_BIGQUERY=1 bash deploy/deploy.sh
+```
+
+About 10 minutes. It keeps the BigQuery tables, the saved policies and the chats, and sets up anything new.
 
 ## Save money between demos
 

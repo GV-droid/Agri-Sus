@@ -1,8 +1,9 @@
 """Agri Sus national crop-allocation optimizer (Google OR-Tools linear program, COIN-OR CLP).
 
-Decision variables  area[d,c,s,t]  for every district in India x candidate crops x {Kharif, Rabi} x 2027..2030,
-                    linked into one glide path: area[t] = baseline + (t-2026)/4 x (area[2030] - baseline), so each
-                    district moves steadily towards its 2030 crop mix and never switches back and forth.
+Decision variables  area[d,c,s,t]  for every district in India x candidate crops x {Kharif, Rabi} x plan years
+                    (2027..2030 by default; 2 to 8 years from 2027), linked into one glide path:
+                    area[t] = baseline + (t-2026)/H x (area[final] - baseline), so each district moves steadily
+                    towards its final-year crop mix and never switches back and forth.
 Calibration         PMP-style: farmers' revealed preference makes today's crop mix their own optimum. Expanding a
                     crop above its baseline is valued at most at the district-season mean margin (rho), shrinking a
                     crop costs at least rho - so the LP cannot "discover" profit that farmers are leaving on the
@@ -12,7 +13,7 @@ Hard constraints    season land (+ rice-fallow use by pulses/oilseeds; <= 3% may
                     growth cap, farmer welfare floor per district-year (calibrated income + incentive >= floor) with
                     incentives limited by an annual budget.
 Soft constraints    national cereal self-sufficiency floor, rice & wheat SSR, district groundwater draft caps
-                    (ramped to target), legume-share ramp, 2030 import-substitution target - penalised slacks so
+                    (ramped to target), legume-share ramp, final-year import-substitution target - penalised slacks so
                     every scenario is solvable and violations are reported instead of silently failing.
 Objective (Rs cr)   farmer welfare + strategic premium on avoided imports + soil N credit - groundwater cost
                     - (MCPF-1) x incentives - transition costs - slacks
@@ -28,7 +29,7 @@ import numpy as np
 import pandas as pd
 from ortools.linear_solver import pywraplp
 
-from .data import PLAN_YEARS, ClimateShock, _price_table, gw_calibration, plan_features, store
+from .data import PLAN_YEARS, ClimateShock, _price_table, gw_calibration, plan_features, plan_years, store
 from .trade import alternatives as trade_alternatives, resolve_trade_cut
 
 CR = 1e7  # Rs per crore
@@ -102,6 +103,12 @@ class SimParams:
     instruments: list = field(default_factory=lambda: list(INSTRUMENTS))  # enabled policy instruments
     # bilateral supply shocks / decoupling goals: [{"country": "Indonesia", "product": "palm oil", "pct": 30}]
     trade_cuts: list = field(default_factory=list)
+    horizon_years: int = len(PLAN_YEARS)  # plan length from 2027 (2-8); targets and caps apply to the final year
+
+
+def _years_of(f: pd.DataFrame) -> list:
+    """The plan years present in a feature frame (the run's horizon)."""
+    return sorted(int(y) for y in pd.unique(f.agri_year))
 
 
 def _demand(cons: float, key: str, year: int) -> float:
@@ -134,9 +141,10 @@ def evaluate(f: pd.DataFrame, area: np.ndarray, p: SimParams, calib: pd.Series,
     f = f.assign(area=area, out_kt=out_kt)
     out = {}
     ctx = ds.context.set_index("district_code")
-    for y in PLAN_YEARS:
+    years = _years_of(f)
+    for y in years:
         g = f[f.agri_year == y]
-        base = f[f.agri_year == PLAN_YEARS[0]]
+        base = f[f.agri_year == years[0]]
         k = {}
         # national cereal balance (districts without crop data scaled by the modelled mean climate factor)
         prod_c = {}
@@ -245,12 +253,19 @@ def _hhi(a: pd.Series) -> float | None:
     return float(((a / t) ** 2).sum()) if t > 0 else None
 
 
-STRESS_TESTS = {
-    "el_nino_2028": ("El Nino drought 2028 (-18% monsoon)", [ClimateShock(2028, kharif_rain_pct=-18, kharif_tmax_c=0.8)]),
-    "heatwave_2029": ("Rabi heatwave 2029 (+2.2 C)", [ClimateShock(2029, rabi_tmax_c=2.2)]),
-    "monsoon_fail_2030": ("Back-to-back weak monsoon 2029-30 (-12%)",
-                          [ClimateShock(2029, kharif_rain_pct=-12), ClimateShock(2030, kharif_rain_pct=-12)]),
-}
+def stress_tests(years: list) -> dict:
+    """Unplanned shocks placed relative to the plan (2nd year, 3rd year, last two years): 2028, 2029 and 2029-30 for
+    the default 2027-30 plan."""
+    y1, y2, ya, yb = years[min(1, len(years) - 1)], years[min(2, len(years) - 1)], years[-2], years[-1]
+    return {
+        f"el_nino_{y1}": (f"El Nino drought {y1} (-18% monsoon)", [ClimateShock(y1, kharif_rain_pct=-18, kharif_tmax_c=0.8)]),
+        f"heatwave_{y2}": (f"Rabi heatwave {y2} (+2.2 C)", [ClimateShock(y2, rabi_tmax_c=2.2)]),
+        f"monsoon_fail_{yb}": (f"Back-to-back weak monsoon {ya}-{str(yb)[2:]} (-12%)",
+                               [ClimateShock(ya, kharif_rain_pct=-12), ClimateShock(yb, kharif_rain_pct=-12)]),
+    }
+
+
+STRESS_TESTS = stress_tests(PLAN_YEARS)
 
 
 def robustness(f: pd.DataFrame, area: np.ndarray, base: np.ndarray, p: SimParams, shocks: list, calib,
@@ -258,15 +273,16 @@ def robustness(f: pd.DataFrame, area: np.ndarray, base: np.ndarray, p: SimParams
     """Re-score the *fixed* plan (no re-optimisation) under unplanned climate shocks: does it still beat the
     status quo exposed to the same shock?"""
     out = []
-    for key, (label, extra) in STRESS_TESTS.items():
-        g = plan_features(shocks + extra, p.price_realisation).reset_index(drop=True)
+    years = _years_of(f)
+    for key, (label, extra) in stress_tests(years).items():
+        g = plan_features(shocks + extra, p.price_realisation, years=years).reset_index(drop=True)
         if len(g) != len(f):
             continue
         g["gw_k"] = f.gw_k.values
         pl, s0 = evaluate(g, area, p, calib, kit_cov), evaluate(g, base, p, calib)
         yrs = [{"year": y, "assi": assi(pl[y]), "assi_status_quo": assi(s0[y]),
                 "cereal_ssr_pct": round(pl[y]["cereal_ssr_pct"], 2),
-                "import_bill_usd_bn": round(pl[y]["import_bill_usd_bn"], 3)} for y in PLAN_YEARS]
+                "import_bill_usd_bn": round(pl[y]["import_bill_usd_bn"], 3)} for y in years]
         out.append({"id": key, "label": label, "years": yrs,
                     "min_assi": min(r["assi"] for r in yrs),
                     "plan_beats_status_quo": all(r["assi"] >= r["assi_status_quo"] for r in yrs)})
@@ -296,7 +312,8 @@ def simulate(p: SimParams, incentive_extra: np.ndarray | None = None) -> dict:
     ctx = ds.context.set_index("district_code")
     cst = ds.constants
     shocks = [s if isinstance(s, ClimateShock) else ClimateShock(**s) for s in p.shocks]
-    f = plan_features(shocks, p.price_realisation).reset_index(drop=True)
+    PLAN_YEARS = plan_years(p.horizon_years)  # noqa: N806 - this run's horizon (2-8 years from 2027)
+    f = plan_features(shocks, p.price_realisation, years=PLAN_YEARS).reset_index(drop=True)
     calib = gw_calibration(f)
     f["gw_k"] = f.district_code.map(calib).values
     f["out_kt_ha"] = _commodity_output(f)
@@ -944,12 +961,28 @@ def simulate(p: SimParams, incentive_extra: np.ndarray | None = None) -> dict:
         e["outlay_cr"] += t_["incentive_cr"]
         e["returns_cr"] += sum(t_["returns_cr"].values())
     tier_order = ["Tier 1", "Tier 2", "Tier 3", "Self-financing", "No outlay"]
+    # whole-plan totals: what the policy costs and returns over every plan year, not just the final one
+    led = [r["fiscal_ledger"] for r in years]
+    t_out = float(sum(r["incentive_cr"] for r in years))
+    t_fx, t_pw, t_ur = (float(sum(l_[k_] for l_ in led)) for k_ in
+                        ("forex_saved_cr", "power_subsidy_saved_cr", "urea_subsidy_saved_cr"))
+    totals = {
+        "years": len(years), "first_year": years[0]["year"], "last_year": years[-1]["year"],
+        "budget_cr": round(float(sum(r["budget_cr"] for r in years)), 0), "outlay_cr": round(t_out, 0),
+        "by_instrument_cr": {k_: round(float(sum(r["outlay_by_instrument_cr"][k_] for r in years)), 0)
+                             for k_ in INSTRUMENTS},
+        "forex_saved_cr": round(t_fx, 0), "power_subsidy_saved_cr": round(t_pw, 0),
+        "urea_subsidy_saved_cr": round(t_ur, 0), "returns_cr": round(t_fx + t_pw + t_ur, 0),
+        "public_return_ratio": round((t_fx + t_pw + t_ur) / t_out, 2) if t_out > 1 else None,
+        "fiscal_roi": round((t_pw + t_ur) / t_out, 2) if t_out > 1 else None,
+    }
     policy_mix = {
         "mode": p.budget_mode,
         "instruments": [{"id": k_, "label": INSTRUMENTS[k_], "enabled": k_ in p.instruments,
                          "outlay_2030_cr": kT["outlay_by_instrument_cr"][k_]} for k_ in INSTRUMENTS],
         "budget_path_cr": [{"year": r["year"], "budget_cr": r["budget_cr"], "outlay_cr": r["incentive_cr"],
                             **{k_: r["outlay_by_instrument_cr"][k_] for k_ in INSTRUMENTS}} for r in years],
+        "totals": totals,
         "min_budget_cr": kT["incentive_cr"] if min_budget else None,
         "target_met": slack_import < 0.005,
         "import_target_shortfall_usd_bn": round(slack_import, 3),
@@ -969,6 +1002,7 @@ def simulate(p: SimParams, incentive_extra: np.ndarray | None = None) -> dict:
         "solver": {"engine": f"OR-Tools · {'COIN-OR CLP' if LP_ENGINE == 'CLP' else LP_ENGINE}", "status": "OPTIMAL" if status == 0 else "FEASIBLE",
                    "variables": solver.NumVariables(), "constraints": solver.NumConstraints(),
                    "objective_cr": round(solver.Objective().Value(), 1), "seconds": round(time.time() - t0, 2)},
+        "plan_years": list(PLAN_YEARS),
         "kpis": years,
         "binding_constraints": binding,
         "lever_status": lever_status,
@@ -1071,7 +1105,8 @@ def district_trace(result: dict, district_code: int) -> dict:
         return {"error": f"district {district_code} has no modelled cropland"}
     cst = store().constants
     ctx = store().context.set_index("district_code").loc[district_code]
-    yT = PLAN_YEARS[-1]
+    years = _years_of(f)
+    yT = years[-1]
     stage_now = float(ctx.cgwb_stage_of_extraction_pct) if pd.notna(ctx.cgwb_stage_of_extraction_pct) else 0.0
     gy = g[g.agri_year == yT].copy()
     gy["change_ha"] = gy.plan_area_ha - gy.baseline_area_ha
@@ -1119,7 +1154,7 @@ def district_trace(result: dict, district_code: int) -> dict:
                 "top_crops": [{"crop": r.crop, "area_ha": round(getattr(r, col))} for r in q.head(5).itertuples()]}
 
     timeline = [{"year": 0, "season": s, **mix(gy[gy.season == s], "baseline_area_ha")} for s in ("Kharif", "Rabi")]
-    for y in PLAN_YEARS:
+    for y in years:
         gg = g[g.agri_year == y]
         for s in ("Kharif", "Rabi"):
             timeline.append({"year": y, "season": s, **mix(gg[gg.season == s], "plan_area_ha")})
@@ -1130,6 +1165,7 @@ def district_trace(result: dict, district_code: int) -> dict:
                     "irrigation_coverage_pct": round(ctx.irrigation_coverage_pct, 1),
                     "soil_n_kg_ha": round(ctx.soil_n_kg_ha_est, 1), "soil_oc_pct": round(ctx.soil_oc_pct_est, 3),
                     "net_sown_area_ha": ctx.net_sown_area_ha, "fallow_ha": ctx.current_fallow_ha},
+        "final_year": yT, "plan_years": years,
         "moves_2030": moves, "rejected_alternatives": rejected[:8], "rotation_timeline": timeline,
         "yearly": drec["years"] if drec else {},
     }
@@ -1141,12 +1177,12 @@ TERMINAL_HEAT_FLAG_DAYS = 2.0  # extra Feb-Mar days with Tmax >= 32 C at grain f
 DRY_SEASON_FLAG_PCT = -10.0
 
 
-def _alt_why(c: dict, gw_cap: str | None) -> str:
+def _alt_why(c: dict, gw_cap: str | None, span: str = "2027-30") -> str:
     tot, gw = c["reduced_cost_inr_ha"] or 0, c["groundwater_cap_cost_inr_ha"] or 0
     if gw_cap in ("at cap", "above cap") and gw > 0.5 * tot:
-        return (f"Forcing 1 ha of {c['name']} would cost the plan Rs {tot:,.0f} over 2027-30, {100 * gw / max(tot, 1):.0f}% of it "
+        return (f"Forcing 1 ha of {c['name']} would cost the plan Rs {tot:,.0f} over {span}, {100 * gw / max(tot, 1):.0f}% of it "
                 f"because it pumps groundwater in a district {gw_cap} on its sustainable draft")
-    return (f"Forcing 1 ha of {c['name']} would cost the plan Rs {tot:,.0f} over 2027-30: the crops chosen give more margin, "
+    return (f"Forcing 1 ha of {c['name']} would cost the plan Rs {tot:,.0f} over {span}: the crops chosen give more margin, "
             "nitrogen and import savings per hectare of this season's land")
 
 
@@ -1154,10 +1190,11 @@ def district_candidates(result: dict, district_code: int, year: int | None = Non
     """Next-crop audit for one district and plan year: for each season, every candidate crop with its predicted yield,
     water feasibility, economics, fit after the preceding season's crop, and what the plan decided (and why)."""
     f = result["_frame"]
-    yT = PLAN_YEARS[-1]
+    years = _years_of(f)
+    yT = years[-1]
     year = int(year or yT)
-    if year not in PLAN_YEARS:
-        raise ValueError(f"year must be one of {PLAN_YEARS}")
+    if year not in years:
+        raise ValueError(f"year must be one of {years}")
     g = f[f.district_code == district_code]
     if g.empty:
         return {"error": f"district {district_code} has no modelled cropland"}
@@ -1167,10 +1204,13 @@ def district_candidates(result: dict, district_code: int, year: int | None = Non
     ctx = ds.context.set_index("district_code").loc[district_code]
     cl = ds["climate_projection_district_year"]
     cr = cl[(cl.district_code == district_code) & (cl.agri_year == year)]
+    if cr.empty:  # after the CMIP6 projections end: the district's projected mean, as in plan_features
+        cd = cl[cl.district_code == district_code]
+        cr = cd.head(1).assign(**cd.mean(numeric_only=True).to_dict()) if len(cd) else cd
     heat = float(cr.terminal_heat_days_delta.iloc[0]) if len(cr) else 0.0
     gy = g[g.agri_year == year]
     rc = g[g.agri_year == yT].set_index(["crop", "season"]).reduced_cost_cr_per_kha
-    lam_of = {y: (j + 1) / len(PLAN_YEARS) for j, y in enumerate(PLAN_YEARS)}
+    lam_of = {y: (j + 1) / len(years) for j, y in enumerate(years)}
     gws = (g.agri_year.map(lam_of) * g.gw_shadow_inr_ha).groupby([g.crop, g.season]).sum() \
         if "gw_shadow_inr_ha" in g else pd.Series(dtype=float)
     drec = next((x for x in result["districts"] if x["district_code"] == district_code), None)
@@ -1188,7 +1228,7 @@ def district_candidates(result: dict, district_code: int, year: int | None = Non
     # agri year y = Kharif y + Rabi y/y+1: Rabi follows this year's Kharif; Kharif follows last year's Rabi
     preceding = {"Rabi": dict(season="Kharif", year=year, label=f"Kharif {year} (plan)",
                               crop=dominant(gy[gy.season == "Kharif"], "plan_area_ha"))}
-    if year == PLAN_YEARS[0]:
+    if year == years[0]:
         preceding["Kharif"] = dict(season="Rabi", year=year - 1, label="Rabi today",
                                    crop=dominant(gy[gy.season == "Rabi"], "baseline_area_ha"))
     else:
@@ -1298,7 +1338,7 @@ def district_candidates(result: dict, district_code: int, year: int | None = Non
             "closest_alternative": ({"crop": best_alt["crop"], "name": best_alt["name"],
                                      "cost_to_plan_inr_ha": best_alt["reduced_cost_inr_ha"],
                                      "groundwater_cap_cost_inr_ha": best_alt["groundwater_cap_cost_inr_ha"],
-                                     "why": _alt_why(best_alt, gw_cap)} if best_alt else None),
+                                     "why": _alt_why(best_alt, gw_cap, f"{years[0]}-{str(yT)[2:]}")} if best_alt else None),
             "candidates": cands,
         })
     return {

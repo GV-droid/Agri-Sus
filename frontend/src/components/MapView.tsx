@@ -3,77 +3,20 @@ import DeckGL from '@deck.gl/react'
 import { FlyToInterpolator, WebMercatorViewport } from '@deck.gl/core'
 import { GeoJsonLayer } from '@deck.gl/layers'
 import { Map } from 'react-map-gl/maplibre'
+import 'maplibre-gl/dist/maplibre-gl.css'
+import { setWorkerUrl } from 'maplibre-gl'
+// maplibre-gl v6 resolves its worker at runtime relative to its own module URL, which Vite cannot see;
+// emit the worker as a hashed asset and point maplibre at it, otherwise the basemap never renders.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import type { DistrictResult, Feature, FeatureCollection, Kpi } from '../api'
 import { fmt } from '../api'
+import { METRICS, ramp, scaleOf, value } from './metrics'
+import type { Metric, Mode, Scale } from './metrics'
 
-export type Metric = 'sustainability_score' | 'gw_stage_pct' | 'legume_share_pct' | 'rice_share_pct' | 'water_saved_mcm' | 'rice_area_change_pct' | 'income_vs_today_pct' | 'incentive_cr' | 'mropi'
-export type Mode = 'sq' | 'plan' | 'diff'
-type Ramp = 'score' | 'water' | 'diverge' | 'green' | 'gold' | 'blue' | 'paddy'
-type Scale = { label: string; unit: string; domain: [number, number]; ramp: Ramp; help: string; decimals?: number; log?: boolean }
-type Cfg = Scale & { sq?: string; diff?: Scale }
+export { METRICS, ramp, scaleOf, value }
+export type { Metric, Mode }
 
-export const METRICS: Record<Metric, Cfg> = {
-  sustainability_score: {
-    label: 'District sustainability score', unit: '/100', domain: [20, 95], ramp: 'score', sq: 'sustainability_score_status_quo', decimals: 0,
-    help: 'Groundwater health 40% + soil (legume share) 30% + crop diversity 30%. Same yardstick for both views.',
-    diff: { label: 'Score gain: plan vs do nothing', unit: ' pts', domain: [0, 20], ramp: 'green', help: 'Points the plan adds to each district (0 = plan leaves the district as it is)' },
-  },
-  gw_stage_pct: {
-    label: 'Groundwater use vs recharge', unit: '%', domain: [0, 200], ramp: 'water', sq: 'gw_stage_status_quo_pct', decimals: 0,
-    help: 'CGWB stage of extraction: water pumped ÷ water recharged. Above 100% the aquifer is being mined.',
-    diff: { label: 'Change in groundwater use', unit: ' pp', domain: [-40, 40], ramp: 'diverge', help: 'Blue = less pumping than doing nothing' },
-  },
-  legume_share_pct: {
-    label: 'Legume share of cropped area', unit: '%', domain: [0, 50], ramp: 'green', sq: 'legume_share_status_quo_pct',
-    help: 'Pulses, groundnut & soybean fix nitrogen (less urea) and replace imports. 33% = one legume in every three crops.',
-    diff: { label: 'Change in legume share', unit: ' pp', domain: [0, 10], ramp: 'green', help: 'Percentage points of cropped area moved into legumes' },
-  },
-  rice_share_pct: {
-    label: 'Paddy share of cropped area', unit: '%', domain: [0, 80], ramp: 'paddy', sq: 'rice_share_status_quo_pct',
-    help: 'Paddy is the thirstiest staple: ~1,200-1,500 mm of water per crop in the north-west.',
-    diff: { label: 'Change in paddy share', unit: ' pp', domain: [-15, 15], ramp: 'diverge', help: 'Blue = paddy replaced by less thirsty crops' },
-  },
-  water_saved_mcm: { label: 'Groundwater saved vs do nothing', unit: ' MCM/yr', domain: [0, 300], ramp: 'blue', decimals: 0, help: 'Million cubic metres of irrigation pumping avoided per year' },
-  rice_area_change_pct: { label: 'Paddy area change vs do nothing', unit: '%', domain: [-30, 30], ramp: 'diverge', help: 'Negative = paddy replaced by pulses, oilseeds, millets or maize' },
-  income_vs_today_pct: { label: 'Farmer income vs today', unit: '%', domain: [100, 115], ramp: 'green', help: 'Farm income after the switch, including income-parity incentives. Guardrail: never below 100% in any district.' },
-  incentive_cr: { label: 'Policy outlay (all instruments)', unit: ' ₹cr/yr', domain: [0, 200], ramp: 'gold', decimals: 0, help: 'Income-parity transfers + seed & FPO kits + price-deficiency payments in the district, paid from the annual budget' },
-  mropi: {
-    label: 'Public return per rupee (MROPI)', unit: '×', domain: [0.1, 100], ramp: 'score', decimals: 1, log: true,
-    help: 'Forex + power + urea subsidy saved ÷ policy outlay. Tier 1 ≥ 10× (fund first), Tier 2 1-10×, Tier 3 < 1× (cut first if the budget shrinks). Brightest green = shifts that need no outlay.',
-  },
-}
-
-export function scaleOf(m: Metric, mode: Mode): Scale {
-  const c = METRICS[m]
-  return mode === 'diff' && c.diff ? c.diff : c
-}
-
-type RGB = [number, number, number]
-const lerp = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(a[i] + (b[i] - a[i]) * t)) as RGB
-export function ramp(kind: Ramp, t: number): RGB {
-  t = Math.max(0, Math.min(1, t))
-  if (kind === 'water') return t < 0.35 ? lerp([46, 160, 110], [240, 200, 70], t / 0.35) : t < 0.5 ? lerp([240, 200, 70], [240, 120, 50], (t - 0.35) / 0.15) : lerp([240, 120, 50], [170, 20, 40], (t - 0.5) / 0.5)
-  if (kind === 'score') return t < 0.5 ? lerp([190, 40, 50], [240, 200, 70], t / 0.5) : lerp([240, 200, 70], [40, 170, 90], (t - 0.5) / 0.5)
-  // dark-theme ramps: "nothing happens" stays dark so the districts that change stand out
-  if (kind === 'green') return t < 0.5 ? lerp([48, 62, 55], [70, 150, 95], t / 0.5) : lerp([70, 150, 95], [150, 240, 140], (t - 0.5) / 0.5)
-  if (kind === 'blue') return t < 0.5 ? lerp([44, 58, 66], [40, 120, 210], t / 0.5) : lerp([40, 120, 210], [130, 210, 255], (t - 0.5) / 0.5)
-  if (kind === 'gold') return t < 0.5 ? lerp([60, 58, 46], [190, 130, 30], t / 0.5) : lerp([190, 130, 30], [255, 215, 90], (t - 0.5) / 0.5)
-  if (kind === 'paddy') return t < 0.5 ? lerp([60, 66, 62], [60, 120, 190], t / 0.5) : lerp([60, 120, 190], [120, 200, 255], (t - 0.5) / 0.5)
-  return t < 0.5 ? lerp([50, 150, 255], [78, 86, 82], t / 0.5) : lerp([78, 86, 82], [255, 95, 70], (t - 0.5) / 0.5)
-}
-
-export function value(d: DistrictResult | undefined, year: number, m: Metric, mode: Mode = 'plan'): number | null {
-  const y = d?.years?.[String(year)] as unknown as Record<string, number | null> | undefined
-  if (!y) return null
-  const cfg = METRICS[m]
-  if (m === 'mropi' && y.mropi == null) return (y as unknown as { mropi_tier?: string }).mropi_tier === 'Self-financing' ? Infinity : null
-  const plan = y[m] ?? null
-  if (!cfg.sq) return plan
-  const sq = y[cfg.sq] ?? null
-  if (mode === 'sq') return sq
-  if (mode === 'diff') return plan != null && sq != null ? plan - sq : null
-  return plan
-}
+setWorkerUrl(maplibreWorkerUrl)
 
 type Props = {
   geo: FeatureCollection | null
@@ -131,6 +74,7 @@ export default function MapView({ geo, districts, year, metric, mode, setMode, k
   const sizeRef = useRef(size)
   const insetRef = useRef(topInset)
   useEffect(() => { viewRef.current = view; sizeRef.current = size; insetRef.current = topInset })
+  const lastFit = useRef<{ focus: typeof focusState; key: number } | null>(null)
   useEffect(() => {
     if (!geo || size.w < 120 || size.h < 120) return
     const b = bounds(geo, focusState) ?? bounds(geo, null)
@@ -140,7 +84,12 @@ export default function MapView({ geo, districts, year, metric, mode, setMode, k
     const narrow = window.innerWidth <= 760
     const pad = { top: Math.min(insetRef.current + 8, size.h / 4), bottom: narrow ? Math.min(100, size.h / 5) : Math.min(24, size.h / 10), left: 16, right: 16 }
     const { longitude, latitude, zoom } = vp.fitBounds(b, { padding: pad })
-    setView({ longitude, latitude, zoom: Math.min(zoom, 8), pitch: 0, bearing: 0, transitionDuration: 700, transitionInterpolator: new FlyToInterpolator() })
+    // fly only when the user changes the focus or presses ⌂; the first fit and resizes snap, so India never shows mis-sized
+    const prev = lastFit.current
+    const fly = prev != null && (prev.focus !== focusState || prev.key !== fitKey)
+    lastFit.current = { focus: focusState, key: fitKey }
+    setView({ longitude, latitude, zoom: Math.min(zoom, 8), pitch: 0, bearing: 0,
+      ...(fly ? { transitionDuration: 700, transitionInterpolator: new FlyToInterpolator() } : {}) })
   }, [geo, focusState, size.w, size.h, fitKey])
 
   // keep a clicked district visible beside its detail card (min(470px, 58%) wide, on the right)

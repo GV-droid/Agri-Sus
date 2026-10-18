@@ -282,6 +282,93 @@ def test_rate_limit_keys():
     assert main._client_ip(Req("evil, 9.9.9.9")) == "9.9.9.9"
 
 
+
+def _temp_store():
+    import tempfile
+    from app import store
+    tmp = tempfile.mkdtemp(prefix="agrisus-test-")
+    saved = dict(store._state)
+    store._state.clear()
+    store._state.update(blobs=store.LocalBlobs(tmp), docs=store.LocalDocs(tmp), notes=[])
+    return store, saved, tmp
+
+
+def _restore_store(store, saved, tmp):
+    import shutil
+    store._state.clear()
+    store._state.update(saved)
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_store_keys_and_ids_are_validated():
+    from app import chats, policies, store
+    for key in ("../x", "runs/../../etc/passwd", "/abs", "a//b", "", ".hidden", "runs/x\x00y"):
+        try:
+            store._check_key(key)
+            raise AssertionError(f"accepted storage key {key!r}")
+        except ValueError:
+            pass
+    for coll, doc in (("policies", "../x"), ("policies", "a/b"), ("secrets", "abc"), ("chats", ""), ("chats", "x" * 65)):
+        try:
+            store._check_doc(coll, doc)
+            raise AssertionError(f"accepted document {coll}/{doc}")
+        except ValueError:
+            pass
+    assert policies.get_meta("../../x") is None and policies.update("../x", name="y") is None and not policies.purge("..")
+    assert not chats.valid_id("../etc/passwd") and chats.get("zzz") is None and not chats.delete("../x")
+    for rid in ("p-../../etc", "p-ABCDEFGHIJ", "../x", "0123456789abc", "p-", ""):
+        assert service.get(rid) is None, rid
+
+
+def test_policy_and_chat_text_is_bounded():
+    from app import chats, policies
+    assert len(policies.clean("x" * 10_000, policies.NAME_MAX)) == policies.NAME_MAX
+    assert policies.clean("a\x00b\x1b[31mc\n\td", 80) == "a b [31mc d"
+    assert len(chats._text("y" * 100_000)) == chats.MAX_CONTENT and "\x00" not in chats._text("a\x00b")
+    assert len(chats._title("z" * 500)) <= 70
+
+
+def test_listing_cache_revalidates_across_instances():
+    store, saved, tmp = _temp_store()
+    try:
+        calls = []
+        real_list = store.LocalDocs.list
+        store.LocalDocs.list = lambda self, *a, **k: calls.append(1) or real_list(self, *a, **k)
+        a = store.Listing("policies", order_by="created_at", limit=10)
+        b = store.Listing("policies", order_by="created_at", limit=10)  # a second Cloud Run instance
+        assert a.rows() == [] and a.rows() == [] and len(calls) == 1  # unchanged: served from the cache
+        store.docs().put("policies", "abcdefghij", {"id": "abcdefghij", "name": "x", "created_at": store.now_iso()})
+        a.bump()
+        assert [r["id"] for r in b.rows()] == ["abcdefghij"]  # the other instance sees the write at once
+        assert [r["id"] for r in a.rows()] == ["abcdefghij"] and len(calls) == 3
+    finally:
+        store.LocalDocs.list = real_list
+        _restore_store(store, saved, tmp)
+
+
+def test_policy_and_chat_endpoints_validate_ids():
+    from fastapi.testclient import TestClient
+    from app import main
+    store, saved, tmp = _temp_store()
+    try:
+        c = TestClient(main.app)
+        assert c.get("/api/run/p-NOT_VALID!").status_code in (400, 404)
+        assert c.get("/api/run/p-abcdefghij").status_code == 404  # well-formed but unknown
+        assert c.patch("/api/policies/abc", json={"name": "x"}).status_code == 404
+        assert c.delete("/api/policies/abc?purge=true").status_code == 404
+        assert c.post("/api/policies", json={"run_id": "../../etc", "name": "x"}).status_code in (400, 422)
+        assert c.post("/api/policies", json={"run_id": "0123456789ab", "name": "x" * 5000}).status_code in (404, 422)
+        assert c.get("/api/chats/zzz").status_code == 404 and c.delete("/api/chats/zzz").status_code == 404
+        assert c.get("/api/policies").json()["policies"] == [] and c.get("/api/chats").json()["chats"] == []
+        store.docs().put("policies", "abcdefghij", {"id": "abcdefghij", "name": "Live", "created_at": store.now_iso()})
+        assert c.delete("/api/policies/abcdefghij?purge=true").status_code == 409  # one request cannot wipe a live policy
+        assert c.delete("/api/policies/abcdefghij").json()["deleted"] is True
+        assert c.delete("/api/policies/abcdefghij?purge=true").json() == {"id": "abcdefghij", "purged": True}
+        assert c.get("/api/policies/abcdefghij").status_code == 404
+    finally:
+        _restore_store(store, saved, tmp)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(k, v) for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]:

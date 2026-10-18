@@ -26,3 +26,6 @@ data/processed/mvp
 data/processed/geo/district_centroids.csv
 # zip archives (the deploy bundle, local backups) are never part of the build
 *.zip
+
+# local store for saved policies / chats / run snapshots (Firestore + Cloud Storage on Google Cloud)
+.agrisus-store

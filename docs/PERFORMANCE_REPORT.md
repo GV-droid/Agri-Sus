@@ -19,10 +19,11 @@ python scripts/benchmark.py https://YOUR-URL all        # adds new solves, load 
 | Gemini policy brief | 9–14 s the first time, 0.27 s cached | ✅ |
 | Gemini co-pilot | first tool call after 1.6–2.7 s; answers in 8–20 s, 53 s when it re-runs the optimiser | ✅ / ⚠️ |
 | Throughput, cached plans | 3.3 requests/s at 20 parallel users (median 4.8 s) | ⚠️ CPU-bound |
-| Lighthouse | Performance **32** mobile / **49** desktop; Accessibility 95; Best practices 100; SEO 91 | ⚠️ page weight |
+| Lighthouse | Live site: Performance **32** mobile / **49** desktop; Accessibility 95; Best practices 100; SEO 91. **After the front-end fixes** (local container, section 6.5): **73–95** mobile (median 88) / **99** desktop; Accessibility, Best practices and SEO **100** | ⚠️ → ✅ after redeploy (re-measure) |
 | Responsive layout | **79/79** checks pass at 9 screen sizes | ✅ |
 | Yield model, hold-out | WMAPE 18.2% against 17.9% for naive persistence | ⚠️ directional use only |
-| Consistency with 2+ instances | a newly created plan was not found (404) on 4 of 12 requests | ❌ fixed in code with session affinity; applies after the redeploy (section 8) |
+| Consistency with 2+ instances | a newly created plan was not found (404) on 4 of 12 requests | ❌ → ✅ fixed in code: session affinity plus a shared run store in Cloud Storage; applies after the redeploy (section 8) |
+| Saved policies (new) | Re-opening a saved policy reads its snapshot instead of solving: **0.14 s** (6-year plan, 405 KB gzip) on a local container, 0.002 s once in memory; listing policies or chats 2–5 ms | ✅ (local container; re-measure on Cloud Run) |
 
 ## 1. Test set-up
 
@@ -166,7 +167,7 @@ duty change as the *latest* news. The prompts do not pass today's date to Gemini
 | Page weight | 3.47 MB in 24 requests | 3.47 MB |
 
 The mobile run hit a DevTools protocol time-out near the end. Its scores were still computed, but treat them as
-indicative.
+indicative. These are the numbers *before* the front-end fixes; see section 6.5 for the re-test.
 
 ### 6.2 What the page downloads
 
@@ -196,6 +197,46 @@ indicative.
 1536×864, 1920×1080, 1100×800, 900×1000 and 390×844. The checks cover the KPI cards fitting, the map and scorecard
 staying on screen, India never being clipped, both on load and after a new run, and no page errors.
 
+### 6.5 Re-test after the front-end fixes
+
+Same Lighthouse version and throttling, run against the production container image on a laptop (Docker,
+`localhost`), not on Cloud Run. The container serves the same files Cloud Run will serve, but there is no
+India ↔ `us-central1` round trip, so these numbers are better than the live site will be. **Re-run Lighthouse on
+the Cloud Run URL after the redeploy** before quoting them.
+
+| | Mobile (slow 4G, 4× CPU slowdown) | Desktop |
+|---|---|---|
+| Performance | **73–95** over four runs (median 88) | **99** |
+| Accessibility | **100** | **100** |
+| Best practices | 100 | 100 |
+| SEO | **100** | **100** |
+| First Contentful Paint | 0.8–2.1 s | 0.5 s |
+| Largest Contentful Paint | 0.8–3.8 s | 0.8 s |
+| Total Blocking Time | 260–540 ms | 10 ms |
+| Cumulative Layout Shift | **0.016** | 0.058 |
+
+Measured on the final build. Mobile scores on a laptop swing by about 20 points between runs, because the simulated
+slow phone depends on how busy the laptop is. Quote the range, or the Cloud Run median after the redeploy.
+
+What changed:
+- A static header and loading shell in `index.html`, so the first paint no longer waits for the JavaScript bundle.
+- The map libraries (deck.gl, MapLibre) load lazily in their own chunk (503 KB gzip); the main bundle is 253 KB
+  gzip, down from 722 KB.
+- Space is reserved for the scenario chips, the scenario description and the lever tags, so nothing jumps when the
+  plan loads (mobile layout shift 0.233 → 0.016).
+- Heading order fixed, instrument check-boxes on 24 px rows, `robots.txt` served, `Cache-Control: immutable` on
+  `/assets/*`.
+- The plan JSON is gzipped once per run and reused; `/api/meta` is computed once.
+- The map fits India to its real size before the first frame. It used to start from a default zoom and fly in over
+  0.7 s; it now flies only when you pick a state or press ⌂.
+
+On mobile the largest paint is still the React header, which replaces the static shell when the app starts.
+
+**Restart test (same container).** After `docker restart`, the seven preset scenarios loaded from the run store in
+0.1 s in total instead of being solved again. Each was then served in 3–5 ms (about 235 KB gzipped), and a saved
+policy reopened in 0.14 s. On Cloud Run the store is Cloud Storage, so a new instance benefits the same way once any
+instance has solved the presets.
+
 ## 7. Yield model accuracy
 
 Hold-out years 2020-21 to 2024-25, trained on 76,827 rows (from `/api/model-card` and `/api/meta`).
@@ -222,10 +263,12 @@ instance's memory. With more than one instance:
 - after a co-pilot what-if, the dashboard may not update to the new plan;
 - the district card and the brief for a custom plan may silently show the default plan instead.
 
-An instance-independent fix is a shared run store (for example Memorystore or Cloud Storage). Until then, use
-session affinity, or a single instance while judges visit. `deploy/deploy.sh` and `cloudbuild.yaml` now turn session
-affinity on; for the live site, run `gcloud run services update agri-sus --region us-central1 --session-affinity`
-once. To reproduce: `python scripts/benchmark.py URL consistency`
+**Fixed in code.** Every solved plan is now written to a shared run store in Cloud Storage (`runs/<model
+version>/<run id>`, free tier, deleted after 30 days). An instance that does not have a plan in memory loads it from
+there instead of returning 404, and a new instance loads the pre-solved scenarios instead of solving them again.
+Saved policies live in Firestore and Cloud Storage, so they are the same on every instance and survive restarts.
+`deploy/deploy.sh` and `cloudbuild.yaml` also keep session affinity on, so a visitor normally stays on the instance
+that already holds their plans. To reproduce after the redeploy: `python scripts/benchmark.py URL consistency`
 (meaningful only while two or more instances are up).
 
 ## 9. Cost of this configuration
@@ -240,18 +283,19 @@ once. To reproduce: `python scripts/benchmark.py URL consistency`
 
 | # | Change | Expected effect | Effort | Status |
 |---|---|---|---|---|
-| 1 | Session affinity now (`gcloud run services update … --session-affinity`); a shared run store later | no more 404s or silent fall-backs to the default plan | 5 min / 1 day | ✅ affinity in `deploy.sh` and `cloudbuild.yaml`; shared store open |
+| 1 | Session affinity now (`gcloud run services update … --session-affinity`); a shared run store later | no more 404s or silent fall-backs to the default plan | 5 min / 1 day | ✅ affinity in `deploy.sh` and `cloudbuild.yaml`; shared run store in Cloud Storage in code |
 | 2 | Pass today's date to the grounding, outlook and co-pilot prompts | "latest" answers cite current sources | 15 min | ✅ in code |
 | 3 | `Cache-Control: public, max-age=31536000, immutable` on `/assets/*` | repeat visits reuse the 750 KB of app files without asking the server | 10 min | ✅ in code; `index.html` is `no-cache` |
-| 4 | Cache the serialised, gzipped plan per run, and compute `/api/meta` once | about 1 s less per cached plan; several times the throughput (*estimate*) | 2 h | open |
-| 5 | A static header and loading screen in `index.html`; load the map libraries lazily; reserve space for the slider tags | much faster first paint on mobile; layout shift below 0.1 | 3 h | open |
+| 4 | Cache the serialised, gzipped plan per run, and compute `/api/meta` once | about 1 s less per cached plan; several times the throughput (*estimate*) | 2 h | ✅ in code |
+| 5 | A static header and loading screen in `index.html`; load the map libraries lazily; reserve space for the slider tags | much faster first paint on mobile; layout shift below 0.1 | 3 h | ✅ in code (section 6.5: mobile CLS 0.016) |
 | 6 | Simplify the district shapes (TopoJSON or quantised coordinates) | `/api/geo` several times smaller (*estimate*) | 2 h | open |
-| 7 | Faster interactive solves: warm-start from the cached plan, try other OR-Tools LP back-ends, show progress with an ETA | a what-if in seconds instead of about 45 s | 1–2 days | open |
+| 7 | Faster interactive solves: warm-start from the cached plan, try other OR-Tools LP back-ends, show progress with an ETA | a what-if in seconds instead of about 45 s | 1–2 days | ◐ progress bar with an ETA from this instance's recent solves (`/api/solve-estimate`) and solves shared across instances in code; warm start open |
 | 8 | Separate rate-limit budgets for briefs/outlook and the co-pilot | heavy co-pilot use no longer blocks briefs | 15 min | ✅ in code (separate co-pilot, brief, outlook and solve budgets) |
-| 9 | Add `robots.txt`; fix the heading order; enlarge the checkboxes | SEO 100; accessibility close to 100 | 30 min | ◐ `robots.txt` in code; the rest open |
+| 9 | Add `robots.txt`; fix the heading order; enlarge the checkboxes | SEO 100; accessibility close to 100 | 30 min | ✅ in code (SEO and accessibility 100, section 6.5) |
 | 10 | Serve Indian users from `asia-south1` (Mumbai) | about 0.2 s less per request (*estimate*) | 1 h | open (`REGION=asia-south1`) |
 | 11 | A yield model that beats persistence (for example persistence plus a climate-anomaly term) | a stronger accuracy claim | 1–2 days | open |
 
-"In code" means the change is in the project files and passes the local test suites, but the live site gets it only
-after the next deploy (`SKIP_BIGQUERY=1 bash deploy/deploy.sh`). The measurements above are from before these
-changes.
+"In code" means the change is in the project files and passes the local test suites (smoke 40/40, browser 80/80,
+layout at 9 sizes, security 13/13), but the live site gets it only after the next deploy
+(`SKIP_BIGQUERY=1 bash deploy/deploy.sh`, which also creates the Firestore database and the storage bucket). Apart
+from section 6.5 and the saved-policy row in the summary, the measurements above are from before these changes.

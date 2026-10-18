@@ -90,7 +90,9 @@ export default function DistrictCard({ t, code, runId, year, onClose, onAsk }: {
   const P = y?.score_pillars as Record<string, number> | undefined
   const S = y?.score_pillars_status_quo as Record<string, number> | undefined
   const gain = y ? y.sustainability_score - y.sustainability_score_status_quo : 0
-  const rows = tr.rotation_timeline.filter((s) => s.year === 0 || s.year === year || s.year === 2027 || s.year === 2030)
+  const ys = [...new Set(tr.rotation_timeline.map((s) => s.year).filter((v) => v > 0))].sort((a, b) => a - b)
+  const yLast = tr.final_year ?? ys[ys.length - 1]
+  const rows = tr.rotation_timeline.filter((s) => s.year === 0 || s.year === year || s.year === ys[0] || s.year === yLast)
   return (
     <div className="district-card" role="dialog" aria-label={`${tr.district_name} district`}>
       <div className="dc-head">
@@ -134,7 +136,7 @@ export default function DistrictCard({ t, code, runId, year, onClose, onAsk }: {
       </div>
       {tab === 'next' && code != null && <NextCrop code={code} runId={runId} year={year} />}
       {tab === 'plan' && <>
-      <h4>Crop mix: today → plan <span className="muted">(share of season area)</span></h4>
+      <h3 className="sub">Crop mix: today → plan <span className="muted">(share of season area)</span></h3>
       <div className="timeline">
         {rows.map((s) => {
           const tot = s.total_ha || s.top_crops.reduce((a, b) => a + b.area_ha, 0) || 1
@@ -155,7 +157,7 @@ export default function DistrictCard({ t, code, runId, year, onClose, onAsk }: {
         })}
       </div>
 
-      <h4>Why — decision trace for 2030</h4>
+      <h3 className="sub">Why — decision trace for {yLast}</h3>
       <ul className="moves">
         {tr.moves_2030.slice(0, 6).map((m) => (
           <li key={m.crop + m.season}>

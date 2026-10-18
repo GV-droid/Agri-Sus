@@ -47,6 +47,11 @@ def _int_or_none(v: str | None) -> int | None:
         return None  # "", "default": keep the model's own setting
 
 
+def _default_store_dir() -> str:
+    # the project folder locally; inside the container the code folder is read-only for the app user
+    return os.path.join(_ROOT, ".agrisus-store") if os.access(_ROOT, os.W_OK) else "/tmp/agrisus-store"
+
+
 @dataclass
 class Settings:
     # Data
@@ -92,6 +97,14 @@ class Settings:
     # per-instance ceiling on Gemini-backed requests (co-pilot answers, new briefs, outlooks) across all visitors,
     # on top of the per-visitor limits: caps the Vertex AI bill if many addresses are used at once
     gemini_requests_per_10min: int = int(os.getenv("GEMINI_MAX_REQUESTS_PER_10MIN", "200"))
+    # Saved policies, chat sessions and solved runs: Firestore documents + a Cloud Storage bucket on Google Cloud
+    # (deploy/deploy.sh creates both inside the free tier and sets STORE_BUCKET); a local folder otherwise
+    store_bucket: str | None = os.getenv("STORE_BUCKET") or None
+    doc_store: str = os.getenv("DOC_STORE", "auto").lower()  # auto | firestore | gcs | local
+    firestore_database: str = os.getenv("FIRESTORE_DATABASE", "(default)")
+    store_dir: str = os.getenv("AGRISUS_STORE_DIR", _default_store_dir())
+    # keep every solved run in the store, so restarts and other instances reuse it instead of re-solving
+    persist_runs: bool = os.getenv("PERSIST_RUNS", "true").lower() in ("true", "1", "yes")
 
     @property
     def gemini_enabled(self) -> bool:

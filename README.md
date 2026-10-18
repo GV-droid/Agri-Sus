@@ -4,7 +4,7 @@
 
 India spent **$23 bn importing pulses and edible oils in FY 2024-25**, heading for $27 bn by 2030 if nothing changes. Meanwhile, the Punjab-Haryana rice belt is drawing groundwater at **150–300% of recharge**. Agri Sus is a planning tool for state and central agriculture planners. It answers one question: *which crop shifts, in which districts, paid for by which policy instruments, can cut imports and groundwater use without hurting farmer income or cereal security, and how do those shifts hold up under El Niño, heatwave, price and supplier shocks?*
 
-It covers **all of India: 752 districts across 35 states and UTs** for the plan years **2027–2030**.
+It covers **all of India: 752 districts across 35 states and UTs**, over a plan of **2 to 8 years from 2027** (default 2027–2030). Plans can be **saved as named policies** and reopened instantly, and the Gemini co-pilot can create, open and discuss them.
 
 **Deploy it yourself in about 30 minutes, with no coding:** [docs/DEPLOY.md](docs/DEPLOY.md), one command in Google Cloud Shell.
 
@@ -14,9 +14,11 @@ It covers **all of India: 752 districts across 35 states and UTs** for the plan 
 
 | Google product | What Agri Sus uses it for | Where |
 |---|---|---|
-| **Vertex AI: Gemini** | The live agent (function calling, 15 tools), policy briefs in 11 languages, and the climate/price outlook scenario. Model fallback chain: `gemini-3.8-flash` → `gemini-3.5-flash` → `gemini-2.5-flash` | `backend/app/agent.py`, `gemini.py` |
+| **Vertex AI: Gemini** | The live agent (function calling, 18 tools, including creating and reading saved policies), policy briefs in 11 languages, and the climate/price outlook scenario. Model fallback chain: `gemini-3.8-flash` → `gemini-3.5-flash` → `gemini-2.5-flash` | `backend/app/agent.py`, `gemini.py` |
 | **Grounding with Google Search** | Cited answers on current monsoon/ENSO outlooks, prices and policy; the outlook is turned into structured shocks that feed the optimizer | `gemini.py` |
 | **Cloud Run** | Hosts the API and the web app in one container, with HTTPS, autoscaling and a least-privilege service account | `Dockerfile`, `deploy/deploy.sh` |
+| **Firestore** (free tier) | The shared policy library and co-pilot chat sessions: names, notes, levers, headline numbers, messages. Survives restarts and is shared by every Cloud Run instance | `backend/app/store.py`, `policies.py`, `chats.py` |
+| **Cloud Storage** (free tier) | Each saved policy's full result snapshot (national KPIs, 752 district plans, budget path, trade, stress tests), so opening a policy re-renders it without re-running the optimizer; also a shared cache of solved runs (deleted after 30 days) | `backend/app/store.py`, `service.py` |
 | **Cloud Build + Artifact Registry** | Builds the container in the cloud and stores it; `cloudbuild.yaml` supports push-to-deploy triggers | `cloudbuild.yaml` |
 | **BigQuery** | The feature store (yield and climate history range-partitioned by `agri_year`; every table clustered on its filter columns, such as district, crop or state), plus time-partitioned run logs, decision traces and the policy budget ledger. The agent queries it in natural language (NL→SQL, read-only) | `deploy/load_bigquery.py`, `bigquery/01_schema.sql`, `03_analytics.sql` |
 | **BigQuery ML** | Two yield models on 105k district-crop-years: a `LINEAR_REG` twin of the agronomic prior (champion) and a `BOOSTED_TREE_REGRESSOR` challenger. The app promotes the challenger only if it wins on 2020–24 hold-out WMAPE | `bigquery/02_bqml_yield_model.sql`, `backend/app/data.py` |
@@ -29,20 +31,22 @@ Without a Google Cloud project, the same app runs fully offline: CSV snapshot, D
 
 | Capability | How |
 |---|---|
-| **Live AI agent** (Gemini on Vertex AI) | A multilingual function-calling agent with **15 tools**: run the optimizer, find the least budget that meets a target, translate a supplier cut into hectares, list who India buys from, read the fiscal ledger, audit a district's next-crop decision, forecast the sustainability index with stress tests, explain a district, predict yield, query BigQuery in natural language (NL→SQL), Google-Search-grounded research with citations, and a Gemini climate/price outlook. The tool trace streams to the UI over SSE. A what-if asked in chat ("what if the budget is ₹20,000 cr?") re-runs the plan and moves the dashboard and sliders with it. Without credentials, a rule-based offline co-pilot answers the same core questions. |
-| **Gemini-grounded forecasts** | `gemini_outlook_forecast` uses **Google Search grounding** to read the current ENSO and IMD outlook and global oilseed and pulse prices. It turns them into structured 2027–30 shocks (rain %, Rabi heat, import price multipliers) that feed straight into the simulation ("✦ Gemini live outlook" scenario). |
+| **Live AI agent** (Gemini on Vertex AI) | A multilingual function-calling agent with **18 tools**: run the optimizer, find the least budget that meets a target, translate supplier cuts into hectares, list who India buys from, read the fiscal ledger, audit a district's next-crop decision, forecast the sustainability index with stress tests, explain a district, predict yield, query BigQuery in natural language (NL→SQL), Google-Search-grounded research with citations, a Gemini climate/price outlook, and **list, read and create saved policies**. Each answer shows a folded "How this answer was built" list of plain-language steps (no raw tool calls). A what-if asked in chat ("what if the budget is ₹20,000 cr?") re-runs the plan and moves the dashboard and sliders with it. Without credentials, a rule-based offline co-pilot answers the same core questions. |
+| **Saved policies** | **💾 Save as policy** stores the plan on screen (its levers and every computed result) in a shared library. **📁 Policies** lists them with their headline numbers; **Open** re-renders the map, KPIs, district cards, budget, trade and stress tests from the saved snapshot in about a second, without re-running the optimizer, and puts the levers back on the sliders. Rename, delete (restorable from the Deleted tab) and delete forever. Ask the co-pilot about any saved policy ("✦ Ask"), or ask it to *create* one ("create a 6-year policy that cuts imports 40% at least cost") — it sets every lever, runs the optimizer, saves the policy and offers **📂 Open policy**. After any what-if it offers to save the plan as a policy. |
+| **Chat sessions** | Every co-pilot conversation is saved and listed under **💬 Chats**: reopen and continue one, start a new chat, or delete one. There is no login: policies and chats are shared by everyone using the deployment, and the UI says so. |
+| **Gemini-grounded forecasts** | `gemini_outlook_forecast` uses **Google Search grounding** to read the current ENSO and IMD outlook and global oilseed and pulse prices. It turns them into structured shocks for every plan year (rain %, Rabi heat, import price multipliers) that feed straight into the simulation ("✦ Gemini live outlook" scenario). |
 | **Policy-instrument mix** | One annual budget is split by the optimizer across three instruments: **income-parity transfers** (DBT), **seed & FPO kits** (₹4,000/ha in kind, +10% pulse/oilseed yield), and **assured price / price-deficiency payments** (top-up to MSP, which also removes half of the switching-risk premium). Any instrument can be switched off. Two budget modes: **fixed budget** (best plan for the money) or **least cost to hit the import target** (the LP minimises the budget). |
 | **Fiscal ledger and MROPI** | Every rupee of outlay is set against what it returns to the exchequer and the economy: forex on imports avoided, farm-power subsidy on groundwater no longer pumped, and urea subsidy saved through legume nitrogen. **MROPI** (public return per rupee) sorts districts into Tier 1 (≥10×), Tier 2 (1–10×), Tier 3 (<1×: funded for farm income and aquifer security), self-financing, and no outlay. MROPI is also a map layer. |
-| **Trade shocks** | "What if Indonesia halts palm-oil exports?" Pick a product and supplier (up to 3 cuts). Country-wise import volumes come from the **India Data Portal's Import Trade Statistics** (DGCI&S, FY 2024-25). The cut becomes a tonnage the plan must replace at home, phased over 2027–30, with the substitute crops and districts, any shortfall, and the remaining suppliers. The Trade tab shows supplier concentration (HHI) for every pulse and edible oil. |
+| **Trade shocks** | "What if Indonesia and Malaysia cut palm oil and Canada stops lentils?" Pick **several products and several supplier countries** at once (up to 8 product × country cuts per plan). Country-wise import volumes come from the **India Data Portal's Import Trade Statistics** (DGCI&S, FY 2024-25). Each cut becomes a tonnage the plan must replace at home, phased over the plan, with the substitute crops and districts, any shortfall, and the remaining suppliers. The Trade tab shows supplier concentration (HHI) for every pulse and edible oil. |
 | **Next-crop prediction** | For any district and plan year, the district card ranks every candidate crop for Kharif and Rabi: decision (expand / keep / reduce), area today → plan, climate-adjusted yield, irrigation need, net margin, and flags (groundwater cap, heat, rotation). It names the recommended next crop after the preceding season's crop and the closest rejected alternative, with the reason. |
-| **Constrained optimisation** | An OR-Tools LP (COIN-OR CLP engine) with about 129k variables and 124k constraints, solved in about 10 s. Every district moves along a straight **glide path** to its 2030 crop mix (¼ of the way in 2027, ½ in 2028, …), so the plan never pays farmers to switch a crop and then switch back. Constraints apply in every year: land (at most 3% left fallow), year-on-year crop-shift limits, CWAR water blocks, a groundwater cap ramp, cereal / rice-export / wheat floors, the national pulse and oil balance with an import-saving target and supplier cuts, a national seed-and-market growth cap per crop, and a district income floor funded by the instrument mix. |
+| **Constrained optimisation** | An OR-Tools LP (COIN-OR CLP engine) with about 129k variables and 124k constraints, solved in about 10 s. Every district moves along a straight **glide path** to its final-year crop mix (¼ of the way in 2027, ½ in 2028, … for a 4-year plan), so the plan never pays farmers to switch a crop and then switch back. The **plan horizon** is a lever (2–8 years); targets, caps and the glide path all end in the final year. Constraints apply in every year: land (at most 3% left fallow), year-on-year crop-shift limits, CWAR water blocks, a groundwater cap ramp, cereal / rice-export / wheat floors, the national pulse and oil balance with an import-saving target and supplier cuts, a national seed-and-market growth cap per crop, and a district income floor funded by the instrument mix. |
 | **Calibrated economics** | PMP-style calibration makes today's crop mix each district's own optimum, so the LP cannot "discover" profit farmers are ignoring: every move must be paid for by a public benefit (water, imports, soil). Expansion carries an adoption-risk premium, and public money costs society 1.25× (marginal cost of public funds). Staples can shrink at most 15% a year (other crops 5%). |
 | **Explainability** | For each district: crop moves with reasons, rejected alternatives (with their reduced costs), binding national constraints (with shadow prices), a rotation timeline, outlay by instrument and MROPI. Every lever is tagged **limiting**, **not limiting** or **not reached** from the LP's duals, so a planner can see which knob actually limits the plan. After each re-run, a "Last change" strip says what moved, or why nothing did. |
-| **Sustainability forecast** | **ASSI**, the Agri Sustainability & Self-reliance Index, scores 0–100 on an absolute scale, so "do nothing" and the plan are measured with the same yardstick. Its four pillars are self-reliance 30%, water 30%, soil 20% and crop diversity 20%. Every district also gets a 0–100 **sustainability score** (water 40%, soil/legumes 30%, diversity 30%). Farmer income is a hard guardrail rather than a scored pillar. The 2027→2030 forecast has a **climate stress-test band**: the fixed plan is re-scored under unplanned El Niño, heatwave and back-to-back weak-monsoon shocks. |
-| **Scenarios and levers** | Seven scenarios (baseline, El Niño 2028, palm-oil price shock, zero groundwater depletion, Indonesia palm-oil halt, Canada lentil cut, Rabi heatwave 2029) plus "✦ Gemini live outlook". Shock scenarios jump the view to the shock year. Levers: budget mode, the three instruments, seven sliders (annual policy budget, land shift, cereal floor, rice exports, import target, MSP realisation, seed & market scale-up), the groundwater guardrail and the trade-shock picker. |
+| **Sustainability forecast** | **ASSI**, the Agri Sustainability & Self-reliance Index, scores 0–100 on an absolute scale, so "do nothing" and the plan are measured with the same yardstick. Its four pillars are self-reliance 30%, water 30%, soil 20% and crop diversity 20%. Every district also gets a 0–100 **sustainability score** (water 40%, soil/legumes 30%, diversity 30%). Farmer income is a hard guardrail rather than a scored pillar. The year-by-year forecast has a **climate stress-test band**: the fixed plan is re-scored under unplanned El Niño, heatwave and back-to-back weak-monsoon shocks. |
+| **Scenarios and levers** | Seven scenarios (baseline, El Niño 2028, palm-oil price shock, zero groundwater depletion, Indonesia palm-oil halt, Canada lentil cut, Rabi heatwave 2029) plus "✦ Gemini live outlook". Shock scenarios jump the view to the shock year. Levers: plan horizon (2–8 years), budget mode, the three instruments, seven more sliders (annual policy budget, land shift, cereal floor, rice exports, import target, MSP realisation, seed & market scale-up), the groundwater guardrail and the multi-country trade-shock picker. In least-cost mode the Budget tab shows the **total cost over the whole plan** as well as the year-by-year path. |
 | **State leaderboard and policy brief** | States ranked by sustainability gain, water saved, paddy→pulses shift and outlay; click one to fly to it. One click writes a one-page brief from the simulation, for India or any state, in 11 Indian languages (Gemini), ready to print. |
 | **Multilingual voice co-pilot** | Ask in English, हिन्दी, தமிழ், తెలుగు, ಕನ್ನಡ, मराठी, বাংলা, ਪੰਜਾਬੀ, ગુજરાતી, മലയാളം or ଓଡ଼ିଆ, by typing or by 🎤 voice (Web Speech API). Answers can be read aloud (🔊). |
-| **Map UI** | React + deck.gl choropleth of every district, with nine layers (including MROPI). It has a ▶ 2027→2030 animation, a "Do nothing vs plan" toggle, zoom-to-state, plain-language legends and ⓘ tooltips, a first-visit guided tour (add `?notour` to skip it), and a district card with a sustainability radar, decision trace and next-crop ranking. The layout is responsive from 900-px tablets and 1280×650 laptops up to 1920×1080, with a scrolling layout on phones. |
+| **Map UI** | React + deck.gl choropleth of every district, with nine layers (including MROPI). It has a ▶ year-by-year animation, a "Do nothing vs plan" toggle, zoom-to-state, plain-language legends and ⓘ tooltips, a first-visit guided tour (add `?notour` to skip it), and a district card with a sustainability radar, decision trace and next-crop ranking. The layout is responsive from 900-px tablets and 1280×650 laptops up to 1920×1080, with a scrolling layout on phones. |
 
 ## Results
 
@@ -79,7 +83,7 @@ Baseline scenario, 2030, default levers: a fixed **₹6,000 cr a year** budget a
 
 - **Guardrails hold.** Cereal self-sufficiency stays at 104% (floor 101.5%), and a 15.9 Mt rice surplus remains for export.
 - **Stress tests.** The fixed plan is re-scored under unplanned shocks. Its worst-year ASSI is 71.6 (El Niño 2028), 71.7 (Rabi heatwave 2029) and 71.7 (back-to-back weak monsoons). In every year it still beats doing nothing under the same shock.
-- **Least cost to hit the 25% import cut.** In least-cost mode the import target becomes a hard constraint. It is met for ₹2,537 → 5,131 → 7,851 → 10,727 cr a year, with the money spread almost evenly across the three instruments; ASSI 2030 reaches 76.9.
+- **Least cost to hit the 25% import cut.** In least-cost mode the import target becomes a hard constraint. It is met for ₹2,537 → 5,131 → 7,851 → 10,727 cr a year — **₹26,246 cr in total over 2027–2030**, returning ₹1.47 lakh cr to the public — with the money spread almost evenly across the three instruments; ASSI 2030 reaches 76.9.
   - In fixed-budget mode, the optimizer balances water, soil and imports rather than chasing the import target alone. So at ₹6,000 cr the target is missed by $1.2 bn, and even at ₹12,000 cr it is $0.85 bn short (water saved 10.3 BCM).
 - **Indonesia halts palm-oil exports.** Indonesia supplies 49% of India's palm oil: 3,882 kt, worth $4.1 bn. The plan re-optimises to replace it at home and covers about 2.2 Mt by 2030 with groundnut, mustard, soybean, sesame and sunflower. The rest must come from Malaysia (31% share), Thailand or Singapore.
 - **Cost of the switch.**
@@ -96,14 +100,18 @@ Baseline scenario, 2030, default levers: a fixed **₹6,000 cr a year** budget a
       │  REST + SSE
       ▼
  Cloud Run: FastAPI (one container, also serves the web app)  ◄── Cloud Build ── Artifact Registry
-  ├─ agent.py       Gemini function-calling loop (15 tools, model fallback chain) + offline router
+  ├─ agent.py       Gemini function-calling loop (18 tools, model fallback chain) + offline router
   ├─ gemini.py      Google Search grounding, grounded outlook → JSON shocks
   ├─ optimizer.py   OR-Tools LP: crops × instruments × supplier cuts, KPIs, ASSI, fiscal ledger, MROPI,
   │                 stress tests, decision traces, next-crop candidates
   ├─ trade.py       bilateral import dependencies (India Data Portal), HHI, supplier-cut decomposition
   ├─ data.py        feature store loader (BigQuery or CSV), BigQuery ML champion/challenger yield engine
-  └─ service.py     run cache, NL→SQL (read-only, allow-listed), BigQuery logging (runs, ledger, traces)
+  ├─ service.py     run cache, NL→SQL (read-only, allow-listed), BigQuery logging (runs, ledger, traces)
+  ├─ policies.py    saved policies: snapshot a run, reopen it without re-solving, rename / delete / restore
+  ├─ chats.py       co-pilot chat sessions (shared, no login)
+  └─ store.py       Firestore + Cloud Storage, with a local-disk fallback for development
       │
+      ├── Firestore: policy library + chat sessions      Cloud Storage: policy snapshots, shared run cache
       ├── Vertex AI Gemini + Grounding with Google Search
       ├── BigQuery: feature store (partitioned + clustered), simulation_runs, policy_budget_ledger,
       │             simulation_decision_traces, analytics views
@@ -121,12 +129,13 @@ bash deploy/deploy.sh          # asks for the project if PROJECT_ID is not set; 
 
 The script:
 
-1. Enables the Cloud Run, Cloud Build, Artifact Registry, Vertex AI and BigQuery APIs.
+1. Enables the Cloud Run, Cloud Build, Artifact Registry, Vertex AI, BigQuery, Firestore and Cloud Storage APIs.
 2. Creates a least-privilege service account: Vertex AI user, BigQuery job user, and data editor on the app's dataset only. If the dataset grant fails, it falls back to read-only Data Viewer and warns that run logging is off.
-3. Loads the data into BigQuery (partitioned and clustered) and trains both BigQuery ML models, registered in the Vertex AI Model Registry.
-4. Optionally runs the Earth Engine climate pipeline.
-5. Builds the container with Cloud Build into Artifact Registry.
-6. Deploys to Cloud Run and prints the URL.
+3. Creates the free-tier stores for saved policies and chats: the Firestore `(default)` database (if the project has none) and a private Cloud Storage bucket (`<project>-agri-sus-store`, cached runs deleted after 30 days), with access for the service account only.
+4. Loads the data into BigQuery (partitioned and clustered) and trains both BigQuery ML models, registered in the Vertex AI Model Registry.
+5. Optionally runs the Earth Engine climate pipeline.
+6. Builds the container with Cloud Build into Artifact Registry.
+7. Deploys to Cloud Run and prints the URL.
 
 To delete everything, run `bash deploy/teardown.sh`. To make a zip for upload to Cloud Shell, run `bash deploy/make_bundle.sh`.
 
@@ -140,13 +149,14 @@ To delete everything, run `bash deploy/teardown.sh`. To make a zip for upload to
 | `YIELD_MODEL` | `auto` | `auto` = champion/challenger; `prior` = agronomic prior only; `bqml` = force the BigQuery ML boosted tree |
 | `USE_EARTH_ENGINE` | `ask` | `1` runs the Earth Engine climate pipeline (needs an Earth Engine-registered project), `0` skips it |
 | `SKIP_BIGQUERY` | `0` | `1` = code-only redeploy that keeps the BigQuery tables and models |
+| `STORE_BUCKET` / `FIRESTORE_LOCATION` | `<project>-agri-sus-store` / the region | Where saved policies, chats and cached runs are kept (Cloud Storage bucket; Firestore location if the database is new) |
 | `BQ_DATASET` / `BQ_LOCATION` | `agri_sus_mvp` / `US` | BigQuery dataset |
 | `GEMINI_MAX_REQUESTS_PER_10MIN` | `200` | Cap on paid Gemini calls (co-pilot questions, briefs, outlooks) per server instance per 10 minutes, across all visitors |
 | `API_DOCS` | `false` | `1` publishes the interactive API docs at `/docs` and `/openapi.json` (hidden by default) |
 
 ## Run locally (no GCP needed)
 
-Without GCP the app runs fully offline: local CSV data, DuckDB for SQL, and a rule-based agent router.
+Without GCP the app runs fully offline: local CSV data, DuckDB for SQL, a rule-based agent router, and saved policies and chats in `.agrisus-store/` on local disk (`AGRISUS_STORE_DIR` to move it).
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
@@ -170,19 +180,24 @@ With the server running on :8080:
 
 ```bash
 # API: every scenario solves, the plan beats do-nothing every year, guardrails hold, levers move the plan the right way,
-# budget/ledger/MROPI add up, least-cost mode meets its target, trade shocks re-plan, next-crop ranks, bad input
-# is rejected, trace / brief / co-pilot respond (31 checks, about 2 min on a cold server)
+# budget/ledger/MROPI add up, least-cost mode meets its target and reports its whole-plan cost, single and
+# multi-country trade shocks re-plan, a 6-year plan runs, next-crop ranks, bad input is rejected, a saved policy
+# reopens with identical numbers without re-solving, the library renames / deletes / restores / purges, chat
+# sessions are kept, the co-pilot creates a policy, trace / brief / co-pilot respond (40 checks, a few minutes on a cold server)
 .venv/bin/python scripts/smoke_test.py http://localhost:8080
 
 # Browser (real headless Chrome with GPU): India map fully drawn, both futures scored, every layer, tab, scenario
-# and lever, budget tab + MROPI map, least-cost mode, instrument switches, trade shock, next-crop card, brief,
-# co-pilot what-if, no console errors (68 checks), plus a layout probe across 9 viewport sizes
+# and lever, budget tab + MROPI map, least-cost mode, instrument switches, single and multi-country trade shocks,
+# next-crop card, brief, co-pilot what-if with plain-language steps, a 6-year plan, save / open / ask about /
+# delete a policy, the co-pilot creating a policy, chat sessions, no console errors (80 checks), plus a layout
+# probe across 9 viewport sizes
 cd tests/e2e && npm install
 W=1440 H=900 node e2e.mjs
 node layout.mjs
 
-# Security regression (offline, about 1 s, no server needed): SQL sandbox, input validation, solve budgets,
-# security headers, body-size limit, rate-limit keys
+# Security regression (offline, a few seconds, no server needed): SQL sandbox, input validation, solve budgets,
+# security headers, body-size limit, rate-limit keys, storage keys / policy & chat ids (no path traversal),
+# bounded text, the shared listing cache
 .venv/bin/python backend/tests/test_security.py
 ```
 
@@ -198,12 +213,14 @@ the Gemini phases, which cost money). The results for the live site are in
 - `GET /api/health`, `/api/meta`, `/api/model-card`, `/api/geo`, `/api/districts`, `/api/forecast`
 - `POST /api/simulate` with `{scenario, overrides}`.
   - Scenarios: `baseline`, `el_nino_2028`, `palm_oil_shock`, `zero_gw_depletion`, `indonesia_palm_halt`, `canada_lentil_halt`, `northern_heatwave`, `gemini_outlook`.
-  - Overrides include the slider values, `gw_mode`, `budget_mode` (`fixed` | `min_budget`), `instruments` (`dbt`, `seed_kits`, `price_support`) and `trade_cuts` (`[{country, product, pct}]`, up to 3).
-- `GET /api/run/{id}`, `GET /api/district/{code}?run_id=`
+  - Overrides include the slider values, `horizon_years` (2–8, default 4), `gw_mode`, `budget_mode` (`fixed` | `min_budget`), `instruments` (`dbt`, `seed_kits`, `price_support`) and `trade_cuts` (`[{country, product, pct}]`, up to 8).
+- `GET /api/run/{id}` (a run id, or `p-<policy id>` for a saved policy's snapshot), `GET /api/district/{code}?run_id=`, `GET /api/solve-estimate`
+- Saved policies: `GET /api/policies`; `POST /api/policies` with `{run_id, name, note?}`; `GET/PATCH /api/policies/{id}` (`{name?, note?, deleted?}`); `DELETE /api/policies/{id}` (soft delete; `?purge=true` then deletes a policy that is already in Deleted for good, and returns 409 for a live one).
+- Chat sessions: `GET /api/chats`, `GET /api/chats/{id}`, `DELETE /api/chats/{id}`.
 - `GET /api/district/{code}/candidates?run_id=&year=`: next-crop ranking for both seasons.
 - `GET /api/trade?product=`: suppliers, shares and HHI. `GET /api/trade/decompose?country=&product=&pct=`: the volume to replace and the hectares needed per substitute crop.
 - `POST /api/brief` with `{run_id?, state?, language?}`. Returns a one-page policy brief as Markdown; repeat requests are served from cache.
-- `POST /api/agent/chat` with `{messages:[{role,content}], language?}`. Returns an SSE stream of events: model, tool_call, tool_result, simulation, text, citations, done.
+- `POST /api/agent/chat` with `{messages:[{role,content}], language?, session_id?, run_id?}`. Returns an SSE stream of events: model, session, tool_call, tool_result, simulation, policy, text, citations, done. The exchange is saved to the chat session.
 
 ## Data
 
@@ -228,13 +245,15 @@ See [`data/README.md`](data/README.md).
 - **Crop scope.** 16 crops are reallocated. Cotton and sugarcane are held at today's area.
 - **Shocks.** The El Niño and heatwave scenarios are one-year yield shocks. A *planned* shock reshapes the glide path only slightly, because the plan is a single linear pathway. To see how a plan copes with surprise, use the stress-test band.
 - **Groundwater.** Caps are soft and budget-limited. The water pillar treats any district above 200% extraction as fully stressed, so improvements there show in BCM but not in the score.
+- **Plan horizon.** The district CMIP6 projections end in 2030; later plan years use each district's 2026–30 projected mean. Longer plans take proportionally longer to solve (the UI's progress bar uses this instance's recent solve times).
+- **Shared, login-free library.** Saved policies and chats are visible to, and deletable by, anyone with the URL (deletes are restorable until purged, and only a policy already in Deleted can be purged). This suits a demo or a single team; a production deployment would add Identity-Aware Proxy or sign-in.
 - **Rotation rules** are approximated through a soft legume-ramp constraint, which most districts don't fully reach within the default budget. Rice export value lost is reported as a KPI rather than priced into the objective.
 - This is a **decision-support** tool. Its outputs are scenarios, not recommendations to individual farmers.
 
 ## Repository layout
 
 ```
-backend/app/        FastAPI app, agent, optimizer, trade, models
+backend/app/        FastAPI app, agent, optimizer, trade, saved policies, chat sessions, storage, models
 backend/models/     yield model artefacts + metrics
 frontend/           React UI
 bigquery/           schema + ledger/trace tables, BQML models, analytics SQL, Earth Engine climate SQL
@@ -250,9 +269,9 @@ docs/               how it works, deploy guide + Cloud Shell tutorial, model car
 
 ## Security & privacy
 
-- **Data.** The app uses only public government, NASA and Copernicus data. It holds no personal data and no secrets. Credentials come from Cloud Run's service-account ADC or from env vars, and are never stored in the repo.
+- **Data.** The app uses only public government, NASA and Copernicus data. It holds no personal data and no secrets; saved policies and chats contain only what users type (the UI says they are shared). The bucket is private (uniform access, public access prevention) and only the app's service account can read or write it and Firestore. Credentials come from Cloud Run's service-account ADC or from env vars, and are never stored in the repo.
 - **NL→SQL sandbox.** Queries are limited to a single `SELECT` over an allow-list of Agri Sus tables. A small SQL lexer checks every function call. It blocks qualified or quoted function names such as `AI.GENERATE`, `ML.PREDICT` or project UDFs (only `SAFE.` is allowed), plus `EXTERNAL_QUERY`, `SESSION_USER`, `VECTOR_SEARCH`, change-history functions and file readers. On BigQuery, every query is first dry-run, and it runs only if BigQuery itself reports a `SELECT` that touches tables of the app's own dataset. Jobs are capped at 200 MB billed and 30 s. In local DuckDB mode, file and network access are turned off with `enable_external_access=false` and the config is locked.
-- **Abuse limits.** Each client IP is rate-limited per 10 minutes, using the trusted right-most `X-Forwarded-For` hop (IPv6 by /64): 40 new optimiser solves, including the ones the co-pilot runs; 30 co-pilot questions; 10 briefs; and 10 outlooks. On top of that, each instance makes at most `GEMINI_MAX_REQUESTS_PER_10MIN` paid Gemini calls across all visitors. One co-pilot answer may make at most 16 tool calls, 3 web searches and 3 new solves. Request bodies are capped at 512 KB, and chat history at 100 messages. Repeat requests that hit the run or brief cache don't count. Identical solves that arrive at the same time share one solver run. Scenarios and state names are validated, and overrides, trade cuts and instruments are allow-listed and clamped. CORS is same-origin by default.
+- **Abuse limits.** Each client IP is rate-limited per 10 minutes, using the trusted right-most `X-Forwarded-For` hop (IPv6 by /64): 40 new optimiser solves, including the ones the co-pilot runs; 30 co-pilot questions; 10 briefs; and 10 outlooks. On top of that, each instance makes at most `GEMINI_MAX_REQUESTS_PER_10MIN` paid Gemini calls across all visitors. One co-pilot answer may make at most 16 tool calls, 3 web searches and 3 new solves. Request bodies are capped at 512 KB, and chat history at 100 messages. Repeat requests that hit the run or brief cache don't count. Identical solves that arrive at the same time share one solver run. Scenarios and state names are validated, and overrides, trade cuts and instruments are allow-listed and clamped. Policy, chat and run ids are checked against strict patterns and storage keys cannot leave their prefix; names, notes and messages are length-capped and stripped of control characters; saving, renaming and deleting share a 60-per-10-minutes write limit per IP; the library holds at most 300 policies and 200 chats. CORS is same-origin by default.
 - **Browser hardening.** A strict Content-Security-Policy (scripts only from the site itself; map tiles only from CARTO), `frame-ancestors 'self'`, `nosniff`, HSTS, a Referrer-Policy and a Permissions-Policy are sent on every response. `/docs` and `/openapi.json` are off unless `API_DOCS=1`. FastAPI 0.128.8 / Starlette 0.49.3 include the fix for the Range-header DoS (CVE-2025-62727).
 - **Output safety.** Markdown is rendered without raw HTML or images, so an injected web page cannot make the co-pilot load a tracking URL. Citation links are restricted to `http(s)`. The agent's system prompt treats tool results and web pages as data, never as instructions.
 - **Accepted risks.** The service account can write to the app's own dataset (for run logs and decision traces). Rate limits and the run cache live in each instance's memory, so with *n* instances the limits are *n* times higher. As a backstop, set a [budget alert](https://cloud.google.com/billing/docs/how-to/budgets) and a Vertex AI quota on the project.

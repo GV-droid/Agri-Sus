@@ -1,4 +1,4 @@
-"""Data access layer + 2027-2030 planning feature table.
+"""Data access layer + planning feature table (default plan 2027-2030; 2 to 8 plan years).
 
 DataStore reads the processed tables from local CSVs (default, offline) or BigQuery (DATA_BACKEND=bigquery),
 so the identical code path runs on a laptop and on Cloud Run.
@@ -16,7 +16,8 @@ import pandas as pd
 from .config import settings
 from .yield_model import YieldModel
 
-PLAN_YEARS = [2027, 2028, 2029, 2030]
+PLAN_YEARS = [2027, 2028, 2029, 2030]  # the default plan; SimParams.horizon_years picks 2-8 years from 2027
+PLAN_START, MIN_HORIZON, MAX_HORIZON = 2027, 2, 8
 TABLES = ["district_context", "district_crop_candidates", "baseline_crop_area_district", "national_macro_constraints",
           "climate_projection_district_year", "cost_of_cultivation_state_crop", "msp_latest", "crop_agronomy",
           "policy_constants"]
@@ -169,19 +170,32 @@ def _price_table(ds: DataStore) -> pd.Series:
     return msp
 
 
+def plan_years(horizon: int | None = None) -> list:
+    """The plan years for a horizon (default: PLAN_YEARS)."""
+    if not horizon:
+        return list(PLAN_YEARS)
+    h = int(min(max(int(horizon), MIN_HORIZON), MAX_HORIZON))
+    return list(range(PLAN_START, PLAN_START + h))
+
+
 def plan_features(shocks: list | None = None, price_realisation: float = 0.9,
-                  procurement_crops: tuple = ("rice", "wheat")) -> pd.DataFrame:
+                  procurement_crops: tuple = ("rice", "wheat"), years: list | None = None) -> pd.DataFrame:
     """Per district x crop x season x plan-year: predicted yield, net margin, irrigation need, CWAR, N credit."""
     ds = store()
     shocks = shocks or []
+    years = list(years or PLAN_YEARS)
     cand = ds["district_crop_candidates"].copy()
     ctx = ds.context.set_index("district_code")
     agr = ds["crop_agronomy"].set_index("crop")
     proj = ds["climate_projection_district_year"].set_index(["district_code", "agri_year"])
+    beyond = sorted(set(years) - set(proj.index.get_level_values("agri_year")))
+    if beyond:  # the CMIP6 district projections end in 2030: later plan years hold each district's projected mean
+        mean = proj.groupby(level="district_code").mean(numeric_only=True)
+        proj = pd.concat([proj, pd.concat([mean.assign(agri_year=y) for y in beyond]).set_index("agri_year", append=True)])
     c = ds.constants
 
     rows = []
-    for y in PLAN_YEARS:
+    for y in years:
         f = cand.copy()
         f["agri_year"] = y
         rows.append(f)
@@ -224,7 +238,12 @@ def plan_features(shocks: list | None = None, price_realisation: float = 0.9,
     if ds.bqml_factor is not None:
         # BigQuery ML challenger supplies the projected-climate factor; what-if shocks act through the prior's
         # marginal response on top of it; crops/districts the challenger does not cover keep the prior
-        learned = ds.bqml_factor.reindex(pd.MultiIndex.from_arrays(
+        bq = ds.bqml_factor
+        if beyond:  # same rule as the climate: years after the projections hold each series' projected mean
+            m_ = bq.groupby(level=[0, 1, 2]).mean().reset_index()
+            ext = pd.concat([m_.assign(agri_year=y) for y in beyond]).set_index(list(bq.index.names))[bq.name]
+            bq = pd.concat([bq, ext])
+        learned = bq.reindex(pd.MultiIndex.from_arrays(
             [f.district_code, f.crop, f.season, f.agri_year])).to_numpy(dtype=float)
         shock = prior / ds.yield_model.climate_factor(climate_rows(*unshocked)[1]) if shocks else 1.0
         cf = np.where(np.isnan(learned), prior, np.clip(learned * shock, 0.4, 1.3))
@@ -279,7 +298,7 @@ def plan_features(shocks: list | None = None, price_realisation: float = 0.9,
 def gw_calibration(feat: pd.DataFrame) -> pd.Series:
     """district factor so modelled baseline GW irrigation draft == CGWB GWRA 2024-25 irrigation extraction."""
     ctx = store().context.set_index("district_code")
-    f0 = feat[feat.agri_year == PLAN_YEARS[0]]
+    f0 = feat[feat.agri_year == feat.agri_year.min()]
     model = (f0.baseline_area_ha * f0.gw_draft_ham_per_ha).groupby(f0.district_code).sum()
     obs = ctx.cgwb_extraction_irrigation_ham.reindex(model.index)
     k = (obs / model.replace(0, np.nan)).clip(0.3, 3.0).fillna(1.0)

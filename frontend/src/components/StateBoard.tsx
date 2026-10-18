@@ -11,7 +11,7 @@ const SORTS: [SortKey, string, (r: StateRow) => number][] = [
   ['incentive', 'Incentive', (r) => r.incentive_cr],
 ]
 
-export default function StateBoard({ rows, focus, onFocus }: { rows: StateRow[]; focus: string | null; onFocus: (s: string | null) => void }) {
+export default function StateBoard({ rows, focus, onFocus, year }: { rows: StateRow[]; focus: string | null; onFocus: (s: string | null) => void; year?: number }) {
   const [sort, setSort] = useState<SortKey>('water')
   const key = SORTS.find((s) => s[0] === sort)![2]
   const list = rows.filter((r) => r.districts >= 1).slice().sort((a, b) => key(b) - key(a))
@@ -19,7 +19,7 @@ export default function StateBoard({ rows, focus, onFocus }: { rows: StateRow[];
   return (
     <div className="board">
       <div className="board-head">
-        <span>States · 2030 <span className="muted">— district sustainability score, do nothing → plan. Click a state to zoom the map.</span></span>
+        <span>States · {year ?? 2030} <span className="muted">— district sustainability score, do nothing → plan. Click a state to zoom the map.</span></span>
         <span className="board-sort" role="group" aria-label="Sort states by">
           {SORTS.map(([id, label]) => <button key={id} className={sort === id ? 'active' : ''} onClick={() => setSort(id)}>{label}</button>)}
           {focus && <button className="link" onClick={() => onFocus(null)}>Show all India</button>}

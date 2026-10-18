@@ -10,7 +10,7 @@ SOUTH = ["Karnataka", "Tamil Nadu", "Andhra Pradesh", "Telangana", "Kerala", "Pu
 SCENARIOS = {
     "baseline": {
         "label": "Baseline (CMIP6 SSP2-4.5)",
-        "description": "NEX-GDDP-CMIP6 SSP2-4.5 2026-30 climate signal (MRI-ESM2-0, EC-Earth3), 2026-27 MSPs, "
+        "description": "NEX-GDDP-CMIP6 SSP2-4.5 climate signal (MRI-ESM2-0, EC-Earth3), 2026-27 MSPs, "
                        "2024-25 trade balance with demand growth.",
         "params": {},
     },
@@ -22,17 +22,17 @@ SCENARIOS = {
     },
     "palm_oil_shock": {
         "label": "Palm-oil price shock",
-        "description": "Indonesian export levy + biodiesel mandate: landed edible-oil price +60%, pulses +10% (2027-30).",
+        "description": "Indonesian export levy + biodiesel mandate: landed edible-oil price +60%, pulses +10% for the whole plan.",
         "params": {"import_price_mult": {"edible_oils": 1.6, "pulses": 1.1}},
     },
     "zero_gw_depletion": {
         "label": "Zero groundwater depletion mandate",
-        "description": "Every district must reach CGWB 'Safe' (stage of extraction <= 70%) by 2030; ramped linearly.",
+        "description": "Every district must reach CGWB 'Safe' (stage of extraction <= 70%) by the final plan year; ramped linearly.",
         "params": {"gw_mode": "zero_depletion"},
     },
     "indonesia_palm_halt": {
         "label": "Indonesia halts palm-oil exports",
-        "description": "A 2022-style export ban held for 2027-30: India must replace the 3.9 Mt of palm oil it bought from "
+        "description": "A 2022-style export ban held for the whole plan: India must replace the 3.9 Mt of palm oil it bought from "
                        "Indonesia in FY2024-25 (49% of its palm-oil imports; DGCI&S data via India Data Portal).",
         "params": {"trade_cuts": [{"country": "Indonesia", "product": "palm oil", "pct": 100}]},
     },
@@ -58,11 +58,12 @@ _RANGES = {
     "w_farmer": (0.0, 5.0), "w_import": (0.0, 5.0), "w_soil": (0.0, 5.0), "w_water": (0.0, 5.0),
 }
 _GW_MODES = {"status_quo", "cap80", "zero_depletion"}
-_PLAN_YEARS = {2027, 2028, 2029, 2030}
+HORIZON = {"min": 2, "max": 8, "default": 4, "start": 2027}  # plan length in years from 2027
+_SHOCK_YEARS = set(range(HORIZON["start"], HORIZON["start"] + HORIZON["max"]))
 BUDGET_MODES = {"fixed": "Fixed budget - best plan within the annual budget",
                 "min_budget": "Least cost - smallest budget that meets the import target"}
 INSTRUMENT_IDS = ("dbt", "seed_kits", "price_support")
-MAX_TRADE_CUTS = 3
+MAX_TRADE_CUTS = 8
 
 
 def _num(v, lo: float, hi: float) -> float:
@@ -140,6 +141,10 @@ def sanitize_overrides(overrides: dict | None) -> dict:
             out[k] = [x for x in INSTRUMENT_IDS if x in v]  # canonical order -> one cache key per set
         elif k == "trade_cuts":
             out[k] = _trade_cuts(v)
+        elif k == "horizon_years":
+            h = int(round(_num(v, HORIZON["min"], HORIZON["max"])))
+            if h != HORIZON["default"]:  # the default stays implicit: one cache key per plan
+                out[k] = h
         elif k == "import_price_mult":
             if not isinstance(v, dict):
                 raise ValueError("import_price_mult must be an object")
@@ -149,8 +154,8 @@ def sanitize_overrides(overrides: dict | None) -> dict:
                 raise ValueError("shocks must be a list of up to 8 items")
             sh = []
             for x in v:
-                if not isinstance(x, dict) or int(_num(x.get("year", 0), 0, 9999)) not in _PLAN_YEARS:
-                    raise ValueError("each shock needs a year in 2027-2030")
+                if not isinstance(x, dict) or int(_num(x.get("year", 0), 0, 9999)) not in _SHOCK_YEARS:
+                    raise ValueError(f"each shock needs a year in {min(_SHOCK_YEARS)}-{max(_SHOCK_YEARS)}")
                 sh.append({"year": int(x["year"]), "kharif_rain_pct": _num(x.get("kharif_rain_pct", 0), -60, 60),
                            "kharif_tmax_c": _num(x.get("kharif_tmax_c", 0), -3, 5),
                            "rabi_tmax_c": _num(x.get("rabi_tmax_c", 0), -3, 5), "states": _states(x.get("states", []))})

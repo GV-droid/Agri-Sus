@@ -1,19 +1,25 @@
-"""Simulation service: caching, public serialisation, BigQuery decision-trace logging, read-only SQL."""
+"""Simulation service: caching, the shared run store, public serialisation, BigQuery decision-trace logging,
+read-only SQL."""
 from __future__ import annotations
 
 import contextvars
+import gzip
 import hashlib
+import io
 import json
+import os
 import re
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import asdict
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
+from . import store as st
 from .config import settings
 from .data import OPTIONAL_TABLES, TABLES, store
 from .optimizer import SimParams, district_candidates, district_trace, simulate
@@ -23,14 +29,21 @@ _cache: "OrderedDict[str, dict]" = OrderedDict()
 _pinned: "set[str]" = set()  # preset scenarios (no overrides) are never evicted, so clicking one never re-solves
 _inflight: "dict[str, threading.Event]" = {}
 _lock = threading.Lock()
-MAX_CACHED_RUNS = 24  # custom runs kept besides the pinned presets
+MAX_CACHED_RUNS = 24  # custom runs kept in memory besides the pinned presets (all of them stay in the run store)
 # set by the co-pilot for the duration of one conversation: called before every solve that is neither cached nor
 # already in flight, so tool-triggered what-ifs count against the same limits as /api/simulate (it raises to refuse)
 _new_solve_hook: contextvars.ContextVar = contextvars.ContextVar("agrisus_new_solve_hook", default=None)
+RUN_ID = re.compile(r"^[0-9a-f]{12}$")
+POLICY_RUN_ID = re.compile(r"^p-[a-z0-9]{10}$")  # a saved policy's snapshot, opened without re-solving
+_solve_seconds: list = []  # recent solve durations, for the progress estimate shown while the optimizer runs
 
 
 def set_new_solve_hook(fn):
     return _new_solve_hook.set(fn)
+
+
+def valid_run_id(run_id) -> bool:
+    return isinstance(run_id, str) and bool(RUN_ID.match(run_id) or POLICY_RUN_ID.match(run_id))
 
 
 def _key(sp: SimParams) -> str:
@@ -44,11 +57,134 @@ def _params(scenario: str, overrides: dict | None) -> SimParams:
     return SimParams(**{a: b for a, b in params.items() if a in allowed})
 
 
+@lru_cache(maxsize=1)
+def model_version() -> str:
+    """Fingerprint of everything that determines a solve besides its parameters (model code, data, yield engine,
+    climate source): stored runs are only reused by a deployment with the same fingerprint."""
+    h = hashlib.sha1()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("optimizer.py", "data.py", "scenarios.py", "trade.py", "yield_model.py"):
+        with open(os.path.join(here, name), "rb") as f:
+            h.update(f.read())
+    ds = store()
+    for name in sorted(ds._t):  # the tables as loaded (BigQuery or the bundled snapshot), not the files on disk
+        df = ds._t[name]
+        h.update(name.encode())
+        try:
+            h.update(pd.util.hash_pandas_object(df, index=False).values.tobytes())
+        except TypeError:  # pragma: no cover - unhashable cells
+            h.update(df.to_csv(index=False).encode())
+    for root, dirs, files in os.walk(settings.model_dir):
+        dirs.sort()
+        for fn in sorted(files):
+            h.update(fn.encode())
+            with open(os.path.join(root, fn), "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+    h.update(json.dumps([settings.data_backend, settings.bq_dataset, settings.climate_table, ds.data_source,
+                         ds.climate_source, ds.yield_engine.get("active")], default=str).encode())
+    return h.hexdigest()[:10]
+
+
+# ---- run snapshots: the public result (gzipped JSON) + the district x crop frame (Parquet) the district cards need
+def _int_keys(x):
+    """JSON turns the year-keyed dicts (districts[].years) into string keys; restore the ints the code expects."""
+    if isinstance(x, dict):
+        if x and all(isinstance(k, str) and k.isdigit() for k in x):
+            return {int(k): _int_keys(v) for k, v in x.items()}
+        return {k: _int_keys(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_int_keys(v) for v in x]
+    return x
+
+
+def public(res: dict) -> dict:
+    return {k: v for k, v in res.items() if not k.startswith("_")}
+
+
+def public_gzip(res: dict) -> bytes:
+    """The public result as gzipped JSON, serialised once per run (the UI fetches the same 2.5 MB plan repeatedly)."""
+    gz = res.get("_gz")
+    if gz is None:
+        gz = gzip.compress(json.dumps(public(res), separators=(",", ":"), default=str).encode(), 6)
+        res["_gz"] = gz
+    return gz
+
+
+def snapshot_put(prefix: str, res: dict) -> None:
+    """Write a run under prefix (frame first: the JSON's presence marks a complete snapshot)."""
+    b = io.BytesIO()
+    res["_frame"].to_parquet(b, compression="zstd", index=False)
+    blobs = st.blobs()
+    blobs.put(f"{prefix}.parquet", b.getvalue(), "application/vnd.apache.parquet")
+    blobs.put(f"{prefix}.json.gz", public_gzip(res), "application/gzip")
+
+
+def snapshot_get(prefix: str) -> dict | None:
+    blobs = st.blobs()
+    raw = blobs.get(f"{prefix}.json.gz")
+    if not raw:
+        return None
+    fr = blobs.get(f"{prefix}.parquet")
+    if not fr:
+        return None
+    res = _int_keys(json.loads(gzip.decompress(raw)))
+    res["_frame"] = pd.read_parquet(io.BytesIO(fr))
+    res["_gz"] = raw
+    return res
+
+
+def _run_prefix(run_id: str) -> str:
+    return f"runs/{model_version()}/{run_id}"
+
+
+def _load_stored(run_id: str) -> dict | None:
+    if not settings.persist_runs or not RUN_ID.match(run_id or ""):
+        return None
+    try:
+        return snapshot_get(_run_prefix(run_id))
+    except Exception as e:  # the store is an accelerator: never fail a request because of it
+        print(f"[store] run {run_id} not loaded: {type(e).__name__}: {e}")
+        return None
+
+
+def _persist(res: dict) -> None:
+    if not settings.persist_runs:
+        return
+    try:
+        snapshot_put(_run_prefix(res["run_id"]), res)
+    except Exception as e:  # pragma: no cover
+        print(f"[store] run {res.get('run_id')} not persisted: {type(e).__name__}: {e}")
+
+
+def _register(k: str, res: dict, pin: bool = False) -> dict:
+    with _lock:
+        if k in _cache:  # a concurrent load/solve won: keep one object per run
+            _cache.move_to_end(k)
+            return _cache[k]
+        _cache[k] = res
+        if pin:
+            _pinned.add(k)
+        evictable = [x for x in _cache if x not in _pinned]
+        for old in evictable[:max(0, len(evictable) - MAX_CACHED_RUNS)]:
+            del _cache[old]
+    return res
+
+
+def register(res: dict) -> dict:
+    """Make a loaded snapshot (e.g. a saved policy) available to the district cards, brief and co-pilot."""
+    return _register(res["run_id"], res)
+
+
 def peek(scenario: str = "baseline", overrides: dict | None = None) -> dict | None:
-    """Cached result for these parameters, without solving (cache hits are free and not rate-limited)."""
+    """Result for these parameters without solving: memory, then the shared run store (both free, not rate-limited)."""
     k = _key(_params(scenario, overrides))
     with _lock:
-        return _cache.get(k)
+        hit = _cache.get(k)
+    if hit is not None:
+        return hit
+    res = _load_stored(k)
+    return _register(k, res, pin=not overrides) if res is not None else None
 
 
 def run(scenario: str = "baseline", overrides: dict | None = None) -> dict:
@@ -63,38 +199,62 @@ def run(scenario: str = "baseline", overrides: dict | None = None) -> dict:
             ev = _inflight.get(k)
             owner = ev is None
             if owner:
-                if hook is not None:
-                    hook()  # may raise (limit reached); nothing is registered yet
                 ev = _inflight[k] = threading.Event()
         if owner:
             break
         ev.wait(timeout=600)
+    fresh = False
     try:
-        res = simulate(sp)
-        res["run_id"] = k
-        res["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        with _lock:
-            _cache[k] = res
-            if not overrides:
-                _pinned.add(k)
-            evictable = [x for x in _cache if x not in _pinned]
-            for old in evictable[:max(0, len(evictable) - MAX_CACHED_RUNS)]:
-                del _cache[old]
+        res = _load_stored(k)  # solved before: by another instance, or by this one before a restart
+        if res is None:
+            if hook is not None:
+                hook()  # may raise (limit reached); waiting requests then retry under their own limits
+            res = simulate(sp)
+            res["run_id"] = k
+            res["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            fresh = True
+            secs = (res.get("solver") or {}).get("seconds")
+            if secs is not None:
+                _solve_seconds.append(float(secs))
+                del _solve_seconds[:-8]
+        res = _register(k, res, pin=not overrides)
     finally:
         with _lock:
             _inflight.pop(k, None)
         ev.set()
-    if settings.project and settings.write_traces_to_bq:
-        threading.Thread(target=_log_bq, args=(res,), daemon=True).start()
+    if fresh:
+        threading.Thread(target=_persist, args=(res,), daemon=True).start()
+        if settings.project and settings.write_traces_to_bq:
+            threading.Thread(target=_log_bq, args=(res,), daemon=True).start()
     return res
 
 
 def get(run_id: str) -> dict | None:
-    return _cache.get(run_id)
+    """A run by id: memory, the shared run store, or a saved policy's snapshot (ids are validated first)."""
+    if not valid_run_id(run_id):
+        return None
+    with _lock:
+        hit = _cache.get(run_id)
+    if hit is not None:
+        return hit
+    if POLICY_RUN_ID.match(run_id):
+        from . import policies
+        res = policies.load_run(run_id[2:])
+    else:
+        res = _load_stored(run_id)
+    return _register(run_id, res) if res is not None else None
 
 
-def public(res: dict) -> dict:
-    return {k: v for k, v in res.items() if not k.startswith("_")}
+def solve_estimate_s() -> float:
+    """Typical solve time on this instance (median of recent solves), for the UI's progress bar."""
+    xs = sorted(_solve_seconds)
+    return round(xs[len(xs) // 2], 1) if xs else 45.0
+
+
+def forget(run_id: str) -> None:
+    with _lock:
+        _cache.pop(run_id, None)
+        _pinned.discard(run_id)
 
 
 def trace(res: dict, district_code: int) -> dict:
