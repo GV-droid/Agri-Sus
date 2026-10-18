@@ -1,0 +1,16 @@
+fastapi==0.128.8
+starlette==0.49.3
+uvicorn[standard]==0.32.1
+pandas==2.2.3
+numpy==2.1.3
+joblib==1.4.2
+ortools==9.11.4210
+google-genai==1.47.0
+google-cloud-bigquery==3.27.0
+google-cloud-storage==2.19.0
+google-cloud-firestore==2.20.0
+db-dtypes==1.3.1
+pyarrow>=17,<27
+duckdb==1.1.3
+rapidfuzz==3.10.1
+pydantic==2.10.3

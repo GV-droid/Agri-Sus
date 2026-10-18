@@ -1,0 +1,14 @@
+parameter,value,unit,source
+fci_buffer_rice_apr1,13.58,Mt,"FCI foodgrain buffer norms (1 April), DFPD 2015 notification"
+fci_buffer_wheat_apr1,7.46,Mt,"FCI foodgrain buffer norms (1 April), DFPD 2015 notification"
+cereal_ssr_floor_pct,101.5,%,Agri Sus Guardrail A (policy choice; configurable)
+max_annual_land_shift_pct,12,% of crop area per district per year,Agri Sus Guardrail B default (configurable 5-20)
+income_parity_margin,1.10,ratio new/status-quo net margin,Agri Sus Guardrail B
+gw_recharge_cap_share,0.80,share of annual extractable recharge,Agri Sus Guardrail C (OE/critical units)
+pdmc_water_saving_pct,35,% reduction in crop water need on micro-irrigated area,"PMKSY-PDMC 30-45% savings (MoA&FW Operational Guidelines 2017)"
+effective_rain_factor,0.70,share of seasonal rainfall usable by crops,"USDA-SCS / FAO-56 typical 0.6-0.8"
+canal_supply_mm_per_irrigated_ha,450,mm per canal-irrigated ha per season,"CWC Water & Related Statistics: average delta at outlet ~0.4-0.5 m"
+usd_inr,84.0,INR per USD,"RBI reference rate FY2024-25 average (~84.0)"
+cost_inflation_pct_per_year,6.0,%/yr escalation of CACP 2019-22 costs to 2026-27,"CACP price-policy reports: A2+FL growth ~5-7%/yr"
+legume_rotation_window_seasons,3,seasons,Agri Sus Guardrail D (ICAR IFS rule)
+cwar_threshold,1.05,ratio,Agri Sus high-yield rule

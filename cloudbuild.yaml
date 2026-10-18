@@ -1,0 +1,50 @@
+# Cloud Build CI/CD for Agri Sus: build -> push to Artifact Registry -> deploy to Cloud Run.
+# deploy/deploy.sh does the first-time setup (APIs, service account, Firestore + Cloud Storage for saved policies and
+# chats, BigQuery + BigQuery ML) - run it once first. This pipeline only updates the variables it lists
+# (--update-env-vars), so settings made by deploy.sh such as STORE_BUCKET are kept.
+# Then either run this pipeline by hand:
+#     gcloud builds submit --config cloudbuild.yaml
+# or connect the GitHub repo in Cloud Build > Triggers so every push to main redeploys.
+# The build identity needs roles/run.admin and roles/iam.serviceAccountUser (see docs/DEPLOY.md, "Automatic deploys").
+substitutions:
+  _REGION: us-central1
+  _SERVICE: agri-sus
+  _REPO: agri-sus
+  _DATASET: agri_sus_mvp
+  _CLIMATE_TABLE: climate_projection_district_year
+  _GEMINI_MODEL: gemini-3.8-flash
+  _MIN_INSTANCES: "1"
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$BUILD_ID", "."]
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$BUILD_ID"]
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$BUILD_ID
+      - --region=${_REGION}
+      - --service-account=agri-sus-run@$PROJECT_ID.iam.gserviceaccount.com
+      - --allow-unauthenticated
+      - --memory=4Gi
+      - --cpu=2
+      - --no-cpu-throttling
+      - --cpu-boost
+      - --concurrency=10
+      - --timeout=600
+      - --session-affinity
+      - --min-instances=${_MIN_INSTANCES}
+      - --max-instances=5
+      - --update-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=true,DATA_BACKEND=bigquery,BQ_DATASET=${_DATASET},CLIMATE_TABLE=${_CLIMATE_TABLE},YIELD_MODEL=auto,GEMINI_AGENT_MODEL=${_GEMINI_MODEL},GEMINI_FORECAST_MODEL=${_GEMINI_MODEL}
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$BUILD_ID

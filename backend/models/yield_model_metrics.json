@@ -1,0 +1,27 @@
+{
+  "model": "Literature-prior agro-climatic response, lambda-calibrated on 2001-2019 district yields",
+  "holdout_years": "2020-21..2024-25",
+  "train_rows": 76827,
+  "test_rows": 28542,
+  "lambda_train": 0.455,
+  "wmape_pct_model": 18.23,
+  "wmape_pct_persistence": 17.92,
+  "climate_shock_rows": 2740,
+  "wmape_pct_model_climate_shocks": 18.48,
+  "wmape_pct_persistence_climate_shocks": 17.61,
+  "rejected_alternatives": [
+    "HistGradientBoostingRegressor (hold-out WMAPE worse than persistence)",
+    "Unconstrained Huber regression (sign-unstable coefficients)"
+  ],
+  "note": "District-level year-to-year yields are dominated by non-climate noise; the model is used for scenario stress-testing (direction and magnitude of climate shocks), not point forecasting.",
+  "lambda_final": 0.362,
+  "effective_coefficients": {
+    "rain_deficit_x_rainfed": 0.1267,
+    "rain_surplus_x_rainfed": 0.0181,
+    "rain_excess_x_rainfed": -0.0362,
+    "tmax_anom_c_x_sensitivity": 0.362,
+    "wheat_terminal_heat_days": -0.0018,
+    "kharif_dry_spell14_x_rainfed": -0.0181,
+    "extreme_rain_days": -0.0036
+  }
+}

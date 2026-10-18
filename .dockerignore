@@ -1,0 +1,29 @@
+**/node_modules
+frontend/dist
+.venv
+data/raw
+data/processed/*.csv
+data/processed/geo/district_centroids.csv
+**/__pycache__
+.git
+*.md
+!README.md
+.idea
+*.iml
+.env
+.env.*
+**/.env
+**/.env.*
+**/.DS_Store
+data/raw/climate_cache
+tests
+.deploy-venv
+# zip archives (the deploy bundle, local backups) are never part of the build
+**/*.zip
+docs
+bigquery
+deploy
+scripts
+
+# local store for saved policies / chats / run snapshots (Firestore + Cloud Storage on Google Cloud)
+.agrisus-store
