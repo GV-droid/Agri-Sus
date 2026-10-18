@@ -348,31 +348,27 @@ sequenceDiagram
 co-pilot) turns a plan into a structured policy proposal that a ministry could circulate for consultation. A
 dedicated **document agent** writes it once; after that it is read, not rewritten.
 
-```mermaid
+
 sequenceDiagram
-  autonumber
-  participant B as Browser (📄 dialog or co-pilot)
-  participant A as Cloud Run API
-  participant G as Gemini on Vertex AI
-  participant S as Cloud Storage
-  participant Q as BigQuery
-  B->>A: GET /api/documents/RUN?state=&language=
-  A->>S: read the saved document
-  A-->>B: the saved version, or null ("Write the policy document")
-  B->>A: POST /api/documents (write, or regenerate with instructions)
-  A-->>B: a background job starts (the dialog can be closed and reopened while it works)
-  A-->>B: step: reading the plan (a fact sheet from the optimizer)
-  par grounded research, reused for 14 days
-    A->>G: existing central and state schemes (Google Search)
-    A->>G: today's import duties (Google Search)
-  end
-  A-->>B: step: testing whether more production cuts imports
-  A->>G: write the sections from the facts (streamed)
-  A-->>B: step: writing, with the section reached ("section D")
-  A->>S: save version N (before the browser is told)
-  A->>Q: one row per section (a free load job)
-  A-->>B: the document
-```
+    autonumber
+    participant B as Browser
+    participant A as Cloud Run API
+    participant F as Firestore
+    participant S as Cloud Storage
+
+    B->>A: POST /api/policies with run_id, name, note
+    A->>S: Write plan snapshot as JSON and Parquet
+    A->>F: Save policy document with levers, KPIs, and totals
+    A->>F: Update library version stamp
+    A-->>B: Return saved policy confirmation and ID
+
+    B->>A: GET /api/run/p-ID
+    A->>S: Read saved snapshot
+    S-->>A: Return saved plan
+    A-->>B: Return saved plan without running optimizer
+    B->>B: Restore levers, scenario, map, and tabs
+    B->>B: Display saved-policy banner
+
 **What is in it.** An executive summary, eight sections and an annex. The sections follow the usual structure for
 reviewing an agricultural policy, adapted to an *ex-ante proposal*: where a review would report measured results,
 the document says what will be measured, against which baseline, and what the model can and cannot attribute.
