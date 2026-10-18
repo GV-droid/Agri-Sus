@@ -467,28 +467,32 @@ added to the saved chat).
 - **Separation of concerns.** The co-pilot converses and decides *when* to regenerate and *what* should change; the
   document agent decides *how* to write it, under its own hard rules.
 
-### 5.7 …save, open and discuss a policy
+### 5.7 Save, open and discuss a policy
 
-A **policy** is a named, saved plan: its levers (scenario, budget mode, instruments, sliders, horizon, trade cuts)
-and the complete solved result.
+A **policy** is a named, saved plan: its levers (scenario, budget mode, instruments, sliders, horizon, trade cuts) and the complete solved result.
 
 ```mermaid
 sequenceDiagram
-  autonumber
-  participant B as Browser
-  participant A as Cloud Run API
-  participant F as Firestore
-  participant S as Cloud Storage
-  B->>A: POST /api/policies with run_id, name, note
-  A->>S: write the plan snapshot to policies/ID (JSON + Parquet)
-  A->>F: write the policy document: levers, headline KPIs, totals
-  A->>F: bump the library's version stamp
-  A-->>B: saved, Open it
-  B->>A: GET /api/run/p-ID (open the policy)
-  A->>S: read the snapshot, no optimiser run
-  A-->>B: the plan, exactly as saved
-  B->>B: restore levers, scenario, map, tabs; show the saved-policy banner
+    autonumber
+    participant B as Browser
+    participant A as Cloud Run API
+    participant F as Firestore
+    participant S as Cloud Storage
+
+    B->>A: POST /api/policies with run_id, name, note
+    A->>S: Write plan snapshot to policies/ID
+    A->>F: Save policy document with levers, KPIs, and totals
+    A->>F: Update library version stamp
+    A-->>B: Return saved confirmation and policy ID
+
+    B->>A: GET /api/run/p-ID
+    A->>S: Read saved snapshot
+    S-->>A: Return saved snapshot
+    A-->>B: Return the saved plan without rerunning optimizer
+    B->>B: Restore levers, scenario, map, and tabs
+    B->>B: Display saved-policy banner
 ```
+
 - **Save.** **💾 Save as policy** (under the levers) saves the plan on screen; it is disabled while the levers have
   unsaved changes, so a policy always matches its numbers. The name is suggested from the levers.
 - **Library.** **📁 Policies** lists every saved policy with its scenario, date, headline numbers (ASSI, import
