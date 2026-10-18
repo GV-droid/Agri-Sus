@@ -344,25 +344,29 @@ sequenceDiagram
 
 ### 5.6 …open the policy document
 
-**📄 Policy document** (in the header, on a saved policy, on the saved-policy banner, from the Trade tab or from the
-co-pilot) turns a plan into a structured policy proposal that a ministry could circulate for consultation. A
-dedicated **document agent** writes it once; after that it is read, not rewritten.
+**📄 Policy document** (in the header, on a saved policy, on the saved-policy banner, from the Trade tab or from the co-pilot) turns a plan into a structured policy proposal that a ministry could circulate for consultation. A dedicated **document agent** writes it once; after that it is read, not rewritten.
 
+```mermaid
 sequenceDiagram
   autonumber
   participant B as Browser
   participant A as Cloud Run API
   participant F as Firestore
   participant S as Cloud Storage
+
   B->>A: POST /api/policies with run_id, name, note
-  A->>S: write the plan snapshot to policies/ID (JSON + Parquet)
-  A->>F: write the policy document: levers, headline KPIs, totals
-  A->>F: bump the library's version stamp
-  A-->>B: saved, Open it
-  B->>A: GET /api/run/p-ID (open the policy)
-  A->>S: read the snapshot, no optimiser run
-  A-->>B: the plan, exactly as saved
-  B->>B: restore levers, scenario, map, tabs; show the saved-policy banner
+  A->>S: Write plan snapshot to policies/ID (JSON + Parquet)
+  A->>F: Write policy document with levers, headline KPIs, and totals
+  A->>F: Update the library version stamp
+  A-->>B: Return saved confirmation and policy ID
+
+  B->>A: GET /api/run/p-ID to open the policy
+  A->>S: Read saved snapshot without running optimizer
+  S-->>A: Return saved snapshot
+  A-->>B: Return the plan exactly as saved
+  B->>B: Restore levers, scenario, map, and tabs
+  B->>B: Show the saved-policy banner
+```
 
 
 **What is in it.** An executive summary, eight sections and an annex. The sections follow the usual structure for
