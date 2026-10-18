@@ -348,26 +348,22 @@ sequenceDiagram
 co-pilot) turns a plan into a structured policy proposal that a ministry could circulate for consultation. A
 dedicated **document agent** writes it once; after that it is read, not rewritten.
 
-
 sequenceDiagram
-    autonumber
-    participant B as Browser
-    participant A as Cloud Run API
-    participant F as Firestore
-    participant S as Cloud Storage
+  autonumber
+  participant B as Browser
+  participant A as Cloud Run API
+  participant F as Firestore
+  participant S as Cloud Storage
+  B->>A: POST /api/policies with run_id, name, note
+  A->>S: write the plan snapshot to policies/ID (JSON + Parquet)
+  A->>F: write the policy document: levers, headline KPIs, totals
+  A->>F: bump the library's version stamp
+  A-->>B: saved, Open it
+  B->>A: GET /api/run/p-ID (open the policy)
+  A->>S: read the snapshot, no optimiser run
+  A-->>B: the plan, exactly as saved
+  B->>B: restore levers, scenario, map, tabs; show the saved-policy banner
 
-    B->>A: POST /api/policies with run_id, name, note
-    A->>S: Write plan snapshot as JSON and Parquet
-    A->>F: Save policy document with levers, KPIs, and totals
-    A->>F: Update library version stamp
-    A-->>B: Return saved policy confirmation and ID
-
-    B->>A: GET /api/run/p-ID
-    A->>S: Read saved snapshot
-    S-->>A: Return saved plan
-    A-->>B: Return saved plan without running optimizer
-    B->>B: Restore levers, scenario, map, and tabs
-    B->>B: Display saved-policy banner
 
 **What is in it.** An executive summary, eight sections and an annex. The sections follow the usual structure for
 reviewing an agricultural policy, adapted to an *ex-ante proposal*: where a review would report measured results,
